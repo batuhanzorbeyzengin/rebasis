@@ -28,11 +28,11 @@ jobs:
     name: lint and types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # hatch-vcs derives the version from tags, which needs history.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --no-group spike
@@ -81,10 +81,10 @@ jobs:
           - os: macos-latest
             python: "3.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       # --all-extras, not a bare sync: every backend test opens with
@@ -114,10 +114,10 @@ jobs:
     name: coverage floors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --all-extras --no-group spike
@@ -136,10 +136,10 @@ jobs:
     name: no torch, no otel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: install the core package only
@@ -166,10 +166,10 @@ jobs:
     name: lowest direct dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: resolve to the declared lower bounds
@@ -196,15 +196,15 @@ jobs:
     # catching. The thresholds live in the CodSpeed project settings: warn at
     # 5%, block at 15%.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --no-group spike
       - name: run the micro-benchmarks under instrumentation
-        uses: CodSpeedHQ/action@v3
+        uses: CodSpeedHQ/action@v5
         with:
           run: uv run pytest tests/performance -m perf --codspeed
           token: ${{ secrets.CODSPEED_TOKEN }}
@@ -216,10 +216,10 @@ jobs:
     # A ceiling is an absolute threshold rather than a comparison against a
     # noisy baseline, so there is no false-positive trade-off to make.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --no-group spike
@@ -230,10 +230,10 @@ jobs:
     name: docs build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: build the site in strict mode
@@ -245,7 +245,7 @@ jobs:
     name: the repository is English-only
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: no Turkish, and no references to a document nobody has
         # The design document is written in Turkish and is local-only. Both of
         # its copies are gitignored; this checks what actually landed, because
@@ -264,12 +264,12 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: gitleaks
         # The pre-commit hook covers local commits; a fork's PR never runs it,
         # so CI has to.
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
