@@ -97,9 +97,11 @@ jobs:
       # `pytest.importorskip`, so without the store clients installed the
       # integration step reports success having run none of them.
       - run: uv sync --all-extras --no-group spike --python ${{ matrix.python }}
-      - name: unit, property and contract
-        run: uv run pytest -m "unit or property or contract" -q
-      - name: integration and end to end
+      - name: the suite
+        # One invocation, not two. Collection imports torch and every store
+        # client, and that cost is paid per process — splitting the run in half
+        # paid it twice for an isolation the markers already provide.
+        #
         # e2e is the only test of the fit → migrate → rollback → status flow,
         # which is the only path in the tool that writes to a user's index.
         #
@@ -109,7 +111,8 @@ jobs:
         # summary line as one that ran them.
         run: |
           set -o pipefail
-          uv run pytest -m "integration or e2e" -q -rs | tee /tmp/results.txt
+          uv run pytest -m "unit or property or contract or integration or e2e" \
+            -q -rs | tee /tmp/results.txt
           if grep -qiE "SKIPPED.*(not installed|extra )" /tmp/results.txt; then
             echo "::error::a backend was skipped for a missing dependency"
             grep -iE "SKIPPED.*(not installed|extra )" /tmp/results.txt

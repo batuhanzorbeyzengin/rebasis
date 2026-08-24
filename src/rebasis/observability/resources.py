@@ -21,6 +21,8 @@ nobody actually asked the hardware.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import resource
 import time
@@ -142,24 +144,32 @@ def _start_energy_measurement() -> Any:
     Absent it, this returns ``None`` and the summary reports no energy — which
     is the honest answer, not zero.
     """
-    try:
-        from zeus.monitor import ZeusMonitor
-    except ImportError:
-        return None
+    # Zeus narrates its own startup, and not only through logging: probing for
+    # an AMD SMI library prints the dlopen failure straight to stdout. That
+    # landed in front of `probe --json`, so `rebasis probe --json | jq` received
+    # "/opt/rocm/lib/libamd_smi.so: cannot open shared object file" and then the
+    # JSON. Silencing the loggers was never enough on its own; stdout has to be
+    # taken away from it for the whole window, import included.
+    #
+    # Discarded rather than moved to stderr: this package already decided this
+    # narration is unwanted, and a user running `probe` did not ask for a report
+    # on which SMI libraries are present.
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            from zeus.monitor import ZeusMonitor
+        except ImportError:
+            return None
 
-    # Zeus narrates its own startup to stderr. This package is the single owner
-    # of what rebasis prints, and a user running `probe` did not ask for a
-    # report on which SMI libraries are present.
-    import logging
+        import logging
 
-    for name in ("zeus", "zeus.device", "zeus.monitor", "zeus.utils"):
-        logging.getLogger(name).setLevel(logging.ERROR)
+        for name in ("zeus", "zeus.device", "zeus.monitor", "zeus.utils"):
+            logging.getLogger(name).setLevel(logging.ERROR)
 
-    try:
-        monitor = ZeusMonitor()
-        monitor.begin_window("rebasis")
-    except Exception:  # noqa: BLE001 - no GPU, no permissions, no driver
-        return None
+        try:
+            monitor = ZeusMonitor()
+            monitor.begin_window("rebasis")
+        except Exception:  # noqa: BLE001 - no GPU, no permissions, no driver
+            return None
     return monitor
 
 
@@ -180,7 +190,9 @@ def _stop_energy_measurement(monitor: Any) -> float | None:
     if monitor is None:
         return None
     try:
-        with warnings.catch_warnings():
+        # Same guard as the start: closing the window can narrate too, and
+        # anything it prints would land in the middle of `--json` output.
+        with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
             # The zero-energy warning is Zeus recommending the approximation
             # we have deliberately declined. The zero itself is handled below.
             warnings.simplefilter("ignore", UserWarning)
