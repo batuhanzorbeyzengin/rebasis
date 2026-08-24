@@ -1,0 +1,1 @@
+`rollback` printed a design-document section reference in its preview. That document is not in the repository, so the reference pointed at something the reader cannot open — the thing the output-hygiene tests exist to prevent, in one of the few lines they did not cover. They cover every printed line now, not only `--help` and `doctor`.

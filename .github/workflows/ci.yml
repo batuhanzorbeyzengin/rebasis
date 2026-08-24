@@ -1,0 +1,275 @@
+# rebasis — continuous integration
+#
+# Runs on GitHub's free CPU runners. GPU work happens nightly on the project's
+# own host, driven by a workflow that is not in this repository, because the
+# free runners have no accelerator. See docs/development/testing.md.
+#
+# Three jobs exist specifically to stop an optional dependency from quietly
+# becoming mandatory. Without them, someone writes `import torch` at module
+# level, every developer machine has torch, and the break only surfaces for a
+# user who installed the core package.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the version from tags, which needs history.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --no-group spike
+      - name: ruff
+        # The same paths the release workflow lints. They diverged once, and
+        # the effect was that a lint failure in examples/ could not be seen
+        # until the release job ran. `scripts/` used to be listed here too; it
+        # is not in a clone, so ruff silently linted nothing for it.
+        run: |
+          uv run ruff check src tests spikes examples
+          uv run ruff format --check src tests spikes examples
+      - name: mypy --strict
+        run: uv run mypy src
+      - name: import-linter
+        run: uv run lint-imports
+      - name: public API is documented
+        # At the target the design names. `pyproject.toml` justified
+        # skipping ruff's D105/D107 by saying interrogate covers it; interrogate
+        # was in no dependency group, no hook and no job.
+        run: uv run interrogate -c pyproject.toml src
+      - name: generated catalogues are up to date
+        # errors.md and events.md are generated. Regenerating and
+        # diffing catches a new error code or event that was added without its
+        # documentation, which belongs in the same PR.
+        run: |
+          uv run python -m rebasis.report.catalog --out docs/reference
+          git diff --exit-code docs/reference || {
+            echo "::error::docs/reference is stale. Run 'just docs-gen' and commit."
+            exit 1
+          }
+
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and the current release. SPEC 0 says
+        # the floor is 3.12 — and it is tested, not merely declared.
+        python: ["3.12", "3.13"]
+        os: [ubuntu-latest]
+        # macOS on the floor version only: the storage layer is where the
+        # differences live — directory fsync, `os.replace`, and a system
+        # sqlite3 that cannot load extensions — and one runner surfaces them.
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --all-extras, not a bare sync: every backend test opens with
+      # `pytest.importorskip`, so without the store clients installed the
+      # integration step reports success having run none of them.
+      - run: uv sync --all-extras --no-group spike --python ${{ matrix.python }}
+      - name: unit, property and contract
+        run: uv run pytest -m "unit or property or contract" -q
+      - name: integration and end to end
+        # e2e is the only test of the fit → migrate → rollback → status flow,
+        # which is the only path in the tool that writes to a user's index.
+        #
+        # `-rs` and the grep because a skip is how this job lied before it had
+        # extras: every backend test opens with `pytest.importorskip`, and a
+        # suite that skipped seventy tests at collection reports the same green
+        # summary line as one that ran them.
+        run: |
+          set -o pipefail
+          uv run pytest -m "integration or e2e" -q -rs | tee /tmp/results.txt
+          if grep -qiE "SKIPPED.*(not installed|extra )" /tmp/results.txt; then
+            echo "::error::a backend was skipped for a missing dependency"
+            grep -iE "SKIPPED.*(not installed|extra )" /tmp/results.txt
+            exit 1
+          fi
+
+  coverage:
+    name: coverage floors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --no-group spike
+      - name: measure
+        # `fail_under` in pyproject enforces the overall floor. The per-module
+        # ones need the finished report, which is why the check below is a
+        # script and not a test: a test reading coverage.json runs inside the
+        # session that writes it, so it can only see the previous run's numbers.
+        run: |
+          uv run pytest -m "not network" -q -p no:warnings \
+            --cov=rebasis --cov-report=json:reports/coverage.json
+      - name: the modules where a bug costs data
+        run: uv run python tools/check_coverage_floors.py
+
+  no-torch:
+    name: no torch, no otel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: install the core package only
+        # No extras at all: this is what `pip install rebasis` gives a user.
+        run: |
+          uv venv --python 3.12
+          uv pip install -e .
+          uv pip install pytest pytest-randomly hypothesis
+      - name: nothing optional leaked in
+        run: |
+          uv run python - <<'PY'
+          import importlib.util as util
+          for package in ("torch", "opentelemetry", "sentence_transformers"):
+              assert util.find_spec(package) is None, f"{package} was pulled in by the core install"
+          print("core install is clean")
+          PY
+      - name: the suite passes without them
+        # `.venv/bin/pytest`, not `uv run`: inside a project `uv run` syncs the
+        # environment from uv.lock first, which replaces the core-only install
+        # this job exists to test.
+        run: .venv/bin/pytest -m "unit or property or contract" -q
+
+  lowest-direct:
+    name: lowest direct dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: resolve to the declared lower bounds
+        # An untested lower bound is the most common way a package ends
+        # up not working on the versions it claims to support.
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[chroma,lancedb,qdrant,sqlite-vec,faiss]" \
+            --resolution lowest-direct
+          uv pip install pytest pytest-randomly hypothesis
+      - name: the floors hold
+        # `.venv/bin/pytest`, not `uv run`: `uv run` would sync from uv.lock and
+        # test the pinned versions instead of the declared floors — which is how
+        # three wrong lower bounds survived in `[project.optional-dependencies]`.
+        run: .venv/bin/pytest -m "unit or contract" -q
+
+  benchmarks:
+    name: benchmarks (codspeed)
+    runs-on: ubuntu-latest
+    # Wall-clock benchmarks never block a PR. CodSpeed measures
+    # instructions in a simulator, which is what makes a 5% gate meaningful on
+    # a shared runner — a wall-clock gate there needs 7% just to keep false
+    # positives at 1%, and a 7% gate hides exactly the regressions worth
+    # catching. The thresholds live in the CodSpeed project settings: warn at
+    # 5%, block at 15%.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --no-group spike
+      - name: run the micro-benchmarks under instrumentation
+        uses: CodSpeedHQ/action@v3
+        with:
+          run: uv run pytest tests/performance -m perf --codspeed
+          token: ${{ secrets.CODSPEED_TOKEN }}
+
+  memory:
+    name: memory ceilings
+    runs-on: ubuntu-latest
+    # Unlike the wall-clock gates, an exceeded memory ceiling **blocks**.
+    # A ceiling is an absolute threshold rather than a comparison against a
+    # noisy baseline, so there is no false-positive trade-off to make.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --no-group spike
+      - name: ceilings and the scaling invariant
+        run: uv run pytest tests/performance/test_memory_ceiling.py -m perf -q
+
+  docs:
+    name: docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: build the site in strict mode
+        # Strict: a dead link is a build failure. Documentation that points at
+        # a page that no longer exists is worse than documentation that stops.
+        run: uv run --group docs mkdocs build
+
+  english-only:
+    name: the repository is English-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no Turkish, and no references to a document nobody has
+        # The design document is written in Turkish and is local-only. Both of
+        # its copies are gitignored; this checks what actually landed, because
+        # .gitignore can be forgotten and a check cannot.
+        run: |
+          if git ls-files | grep -qE '^docs/(_local|design)/'; then
+            echo "::error::the design document was committed"
+            exit 1
+          fi
+          if git grep -lnI $'\u00a7' -- . ':!.github/workflows/ci.yml'; then
+            echo "::error::a section reference points at a document no reader has"
+            exit 1
+          fi
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        # The pre-commit hook covers local commits; a fork's PR never runs it,
+        # so CI has to.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

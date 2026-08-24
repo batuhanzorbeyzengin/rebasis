@@ -1,0 +1,1 @@
+T0 now encodes its query proxies the way a query is encoded rather than the way a document is. For symmetric models nothing changes; for asymmetric ones the previous figure was optimistically biased, because it measured document-retrieves-document rather than what happens at serve time. T0 still cannot evaluate the query encoding itself — see ADR 8.

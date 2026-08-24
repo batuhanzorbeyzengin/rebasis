@@ -1,0 +1,1 @@
+`--synth-queries title|lead|keywords` estimates the upgrade from the documents when no query log exists (the T2 tier). `keywords` is the strategy worth using — `lead` and `title` hand the retriever the answer, and rebasis detects that and marks the run provisional rather than reporting a meaningless 1.00x.

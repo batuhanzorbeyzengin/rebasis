@@ -1,0 +1,1 @@
+Tests for `rebasis gc`, the one command whose purpose is to delete: that a bare run removes nothing, that `--apply` removes only what it listed, and that a shadow copy — the thing that makes a migration reversible — needs `--i-understand` before it goes.

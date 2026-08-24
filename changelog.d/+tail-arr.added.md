@@ -1,0 +1,1 @@
+`tail_arr` is computed. The `caution` band's rationale told users to look at it, the README said it was in the report, and nothing produced it. It is recall in the sparsest clusters — the signal that drift is concentrated in part of the corpus rather than spread evenly.

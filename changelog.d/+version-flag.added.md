@@ -1,0 +1,1 @@
+`rebasis --version` prints the version. There was a `version` subcommand, but `--version` is what people type first, and answering `No such option: --version` reads as a broken tool before anything has run.

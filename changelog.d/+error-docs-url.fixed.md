@@ -1,0 +1,1 @@
+Every error panel pointed at `docs/reference/errors.md#rb-exxxx`, a repository path that a `pip install rebasis` user does not have and an anchor the docs site does not define. It now names the published page.

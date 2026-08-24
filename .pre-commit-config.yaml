@@ -1,0 +1,74 @@
+# rebasis — pre-commit hooks
+#
+# A .gitignore entry can be forgotten; a hook cannot. The real protection against
+# secret leakage is here. None of these hooks is a convenience — each one makes a
+# class of mistake structurally impossible.
+#
+# Install:  uv run pre-commit install --install-hooks --hook-type commit-msg
+
+repos:
+  # ── secret leakage ───────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--maxkb=512]      # golden data and model weights stay out of git
+        # The lock file is the one legitimate exception: it is 1.2 MB, it is
+        # generated, and it must be committed for a reproducible install. Raising
+        # the ceiling to fit it would have raised it for the model weights too,
+        # which is the thing the hook exists to stop.
+        exclude: ^uv\.lock$
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ── lint and format ──────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Must match the ruff the project itself runs. When this lagged at v0.14.5
+    # against a resolved 0.16.4, the hook did not know PLR0917, read that half of
+    # every `# noqa: PLR0913, PLR0917` as unused and deleted it — and then the
+    # project's own ruff, which does emit PLR0917, failed on what the hook had
+    # just written. A linter that edits code to break the linter.
+    rev: v0.16.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ── commit message format ────────────────────────────────────────────
+  # Humans do not pick the version number; commit messages do. A malformed
+  # message makes python-semantic-release compute the wrong release.
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.9.1
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  # ── local hooks ──────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      # The design document is never committed: it carries real host details
+      # and it is written in Turkish, while the repository is English-only.
+      # .gitignore blocks both copies; this hook also blocks `git add -f`.
+      - id: no-design-doc
+        name: the design document must not be committed
+        # A block scalar, not a plain one. The plain form was invalid YAML: the
+        # `: ` inside `echo "ERROR: ..."` reads as a mapping, so pre-commit
+        # could not load this file at all and *every* hook below was silently
+        # inert — including gitleaks. Folded style has no such trap.
+        entry: >-
+          bash -c 'if git diff --cached --name-only | grep -qE "^docs/(_local|design)/";
+          then echo "ERROR: the design document is local-only and must not be committed";
+          exit 1; fi'
+        language: system
+        pass_filenames: false

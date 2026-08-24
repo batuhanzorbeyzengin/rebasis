@@ -1,0 +1,557 @@
+# rebasis — package definition
+#
+# The version is derived from the git tag; it is never stored by hand.
+# Layer rules are enforced in CI by import-linter.
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rebasis"
+dynamic = ["version"]
+description = "Change the embedding model of your local RAG without deleting the index"
+readme = "README.md"
+license = "Apache-2.0"
+# SPEC 0: a Python release is dropped three years after its
+# initial release. 3.11 (Oct 2022) passed that mark in Oct 2025, so the
+# floor is 3.12. Declaring 3.11 would be a support promise we do not test.
+requires-python = ">=3.12"
+authors = [{ name = "Batuhan Zorbey Zengin", email = "batuhanzorbeyzengin@gmail.com" }]
+keywords = ["embeddings", "rag", "vector-database", "migration", "procrustes"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    # Only the versions CI runs. A classifier is a claim, and 3.14 was one
+    # nothing tested.
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+# Core dependencies — no torch.
+# In a plain `pip install rebasis`, probe, Procrustes fitting and the decision
+# rule run on numpy/scipy/sklearn alone.
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+    "typer>=0.12",
+    "rich>=13.0",
+    "structlog>=24.1",
+    "pydantic-settings>=2.2",
+    "platformdirs>=4.0",
+    "safetensors>=0.4",
+    "filelock>=3.13",
+    "tenacity>=8.2",
+    "threadpoolctl>=3.2",
+    "psutil>=5.9",
+    "python-ulid>=2.2",
+]
+
+[project.optional-dependencies]
+# torch ships platform-specific wheels; rebasis does not try to pick
+# one for the user. For GPU the user supplies their own --index-url.
+torch = ["torch>=2.2"]
+otel = [
+    "opentelemetry-api>=1.24",
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp>=1.24",
+    "opentelemetry-instrumentation-logging>=0.45b0",
+]
+# Recall@k and MRR live in the core on numpy; ranx covers nDCG,
+# significance testing and fusion. An extra because it pulls in Numba.
+eval = ["ranx>=0.3.20"]
+fastembed = ["fastembed>=0.4"]
+sentence-transformers = ["sentence-transformers>=3.0"]
+# Every floor below is the oldest version this backend's integration suite
+# actually passes on, checked by running it there — not the oldest that looked
+# plausible. Three of them moved once they were checked.
+#   chromadb 0.5.0  ships no cp312 wheel, and the declared floor is 3.12.
+#   qdrant-client   grew `query_points` in 1.10; the backend calls nothing else.
+#   faiss-cpu 1.8   was built against numpy 1 and cannot import under numpy 2,
+#                   which this package allows.
+chroma = ["chromadb>=0.5.5"]
+lancedb = ["lancedb>=0.13"]
+qdrant = ["qdrant-client>=1.10"]
+sqlite-vec = ["sqlite-vec>=0.1.6"]
+faiss = ["faiss-cpu>=1.9"]
+ollama = ["ollama>=0.3"]
+openai = ["openai>=1.40"]
+llama-cpp = ["llama-cpp-python>=0.3"]
+# Energy is measured or absent. Zeus reads the GPU's own counters.
+energy = ["zeus-ml>=0.10"]
+# The bridges hold no hard dependency: they duck-type the wrapped object, so
+# the framework is only needed by a user who already has it.
+langchain = ["langchain-core>=0.3"]
+llamaindex = ["llama-index-core>=0.11"]
+# Everything with a registered entry point that installs from a wheel, so
+# `[all]` leaves no backend advertised by `rebasis doctor` that cannot be
+# opened. Four extras stay out on purpose, each for a different reason:
+#   torch       ships platform-specific wheels the user has to choose (above).
+#   energy      zeus-ml only does anything on a machine with a GPU.
+#   llama-cpp   compiles from source; a failure there would take `[all]` down
+#               with it, on machines that were never going to use it.
+#   langchain,  bridges around an object the caller already has. Pulling a
+#   llamaindex  framework in to wrap nothing is the wrong default.
+all = [
+    "rebasis[otel,eval,fastembed,sentence-transformers,ollama,openai,chroma,lancedb,qdrant,sqlite-vec,faiss]",
+]
+
+[project.urls]
+Homepage = "https://github.com/batuhanzorbeyzengin/rebasis"
+Documentation = "https://batuhanzorbeyzengin.github.io/rebasis/"
+Issues = "https://github.com/batuhanzorbeyzengin/rebasis/issues"
+Changelog = "https://github.com/batuhanzorbeyzengin/rebasis/blob/main/CHANGELOG.md"
+
+[project.scripts]
+rebasis = "rebasis.cli:app"
+
+# Plugin architecture: a third-party package can add a store or an
+# embedder without forking rebasis.
+[project.entry-points."rebasis.stores"]
+memory = "rebasis.store.backends.memory:MemoryStore"
+chroma = "rebasis.store.backends.chroma:ChromaStore"
+lancedb = "rebasis.store.backends.lancedb:LanceDBStore"
+sqlite-vec = "rebasis.store.backends.sqlite_vec:SqliteVecStore"
+qdrant = "rebasis.store.backends.qdrant:QdrantStore"
+faiss = "rebasis.store.backends.faiss:FaissStore"
+
+[project.entry-points."rebasis.embedders"]
+precomputed = "rebasis.embed.backends.precomputed:PrecomputedEmbedder"
+sentence-transformers = "rebasis.embed.backends.sentence_transformers:SentenceTransformerEmbedder"
+fastembed = "rebasis.embed.backends.fastembed:FastEmbedEmbedder"
+ollama = "rebasis.embed.backends.ollama:OllamaEmbedder"
+openai = "rebasis.embed.backends.openai_compat:OpenAICompatEmbedder"
+llama-cpp = "rebasis.embed.backends.llama_cpp:LlamaCppEmbedder"
+
+# ── version: the git tag is the single source ───────────────────────
+[tool.hatch.version]
+source = "vcs"
+# Keep the build working before the first tag exists (fresh repo).
+fallback-version = "0.1.0.dev0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/rebasis/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rebasis"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/rebasis", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
+
+# ── uv ────────────────────────────────────────────────────────────────
+[tool.uv]
+default-groups = ["dev"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.5",
+    "pytest-randomly>=3.15",
+    "hypothesis>=6.100",
+    "syrupy>=4.6",
+    "dirty-equals>=0.7",
+    "pytest-benchmark>=4.0",
+    # Instruction-count benchmarking. Wall clock on a shared runner
+    # needs a 7% gate to keep false positives at 1%, which is wide enough to
+    # hide the regressions worth catching; a simulator does not have that
+    # trade-off, so this is what the PR gate is built on.
+    "pytest-codspeed>=3.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.0",
+    # Public-API docstring coverage. `[tool.interrogate]` sets the target.
+    "interrogate>=1.7",
+    "pre-commit>=3.7",
+    "towncrier>=24.7",
+]
+# The documentation site. Separate from `dev` because building the docs
+# is not part of the test loop and pulling mkdocs into every CI job is waste.
+docs = [
+    # Pinned below 2.0 deliberately. Material for MkDocs' own maintainers state
+    # that MkDocs 2.0 removes the plugin system and the theming system with no
+    # migration path, which would take mkdocstrings and this theme with it.
+    # Revisit when that has settled, not before.
+    "mkdocs>=1.6,<2.0",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
+# M0 spike dependencies — never shipped, development environment only
+spike = [
+    "sentence-transformers>=3.0",
+    "ir-datasets>=0.5.9",
+    "torch>=2.2",
+]
+
+# ══════════════════════════════════════════════════════════════════════
+# Enforced rules
+#
+# None of these is a style preference. Each one makes a class of mistake
+# impossible to merge, so that review time goes to design rather than to
+# spotting a `print()` in a hot loop.
+# ══════════════════════════════════════════════════════════════════════
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Ruff runs with ALL rules and justified ignores. Starting from ALL and
+# subtracting is the only way to pick up new rules automatically; an opt-in
+# list silently misses everything added upstream.
+select = ["ALL"]
+ignore = [
+    # Formatter owns these; enabling them fights `ruff format`.
+    "COM812", "ISC001",
+    # We document modules, classes and public functions, not every dunder or
+    # __init__. interrogate enforces the coverage target instead.
+    "D105", "D107", "D203", "D213",
+    # The design doc is the architecture record; TODO/FIXME comments are
+    # tracked as issues, not banned outright.
+    "FIX002", "TD002", "TD003",
+    # Assert is how contract and property tests express intent.
+    "S101",
+    # Boolean positional arguments are flagged project-wide, but keyword-only
+    # is already enforced by our own signatures (every flag is after `*`).
+    "FBT001", "FBT002",
+    # `Any` is allowed where a third-party boundary genuinely returns it; the
+    # requires a justification comment instead of a blanket ban.
+    "ANN401",
+    # Error classes are named for what went wrong, not with an -Error suffix:
+    # `except IncompatibleAdapter:` reads better than `except
+    # IncompatibleAdapterError:`, and the stable RB-Exxxx code already carries
+    # the "this is an error" semantics. The naming is fixed by the design.
+    "N818",
+    # Copyright headers are not used; the LICENSE file and package metadata
+    # carry the licence. A per-file header would be 10 lines of noise per module.
+    "CPY001",
+    # Docstrings use mathematical notation on purpose: ‖·‖, ≈, μ and ᵀ are how
+    # the formulae are written. Transliterating them would make the code harder
+    # to check against the maths, not easier.
+    "RUF002", "RUF003",
+    # Every error carries "what happened, why, what to do next".
+    # These rules push messages out of the raise statement into a preceding
+    # variable, which for our three-argument errors (message, hint, context)
+    # adds a line of indirection without making anything clearer.
+    "TRY003", "EM101", "EM102",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Examples are read as much as they are run. They print to a terminal on
+# purpose, import inside main() so the file reads top-down, and are standalone
+# scripts rather than package modules.
+"examples/*" = ["INP001", "T201", "PLC0415", "D103", "D301"]
+# Standalone build scripts, run by hand. They print progress on purpose and
+# import heavy optional dependencies inside functions.
+"tools/*" = ["INP001", "T201", "PLC0415", "D103", "D301"]
+# The ONLY places allowed to touch logging or print directly.
+"src/rebasis/observability/*" = ["A005"]
+# The no-op OTel layer deliberately mirrors the real API's signatures
+# and swallows every exception: telemetry must never break a run. Both are the
+# point of the module, not oversights.
+"src/rebasis/observability/otel.py" = ["ARG002", "BLE001", "PLC0415", "D102"]
+# The SDK is an optional extra, so every OTel import here is inside a function
+# guarded by `otel_enabled()`.
+"src/rebasis/observability/telemetry.py" = ["PLC0415"]
+# Optional dependencies are imported lazily so that `pip install rebasis` stays
+# torch-free and OTel-free.
+"src/rebasis/observability/logging.py" = ["PLC0415"]
+"src/rebasis/observability/env.py" = ["PLC0415"]
+# Zeus and the BLAS probe are optional and only consulted at the end of a run;
+# importing them at module level would put them on `import rebasis`.
+"src/rebasis/observability/resources.py" = ["PLC0415"]
+# The whole point of this module: torch is imported only where it is
+# actually needed, so that importing rebasis.compute never pulls it in.
+"src/rebasis/compute/*" = ["PLC0415"]
+# This module is *about* low-level filesystem calls. `os.replace` is the swap
+# itself — Path has no equivalent that keeps the guarantee, so PTH105 would push
+# us away from the very primitive the module exists to use correctly.
+"src/rebasis/storage/atomic.py" = ["PTH105", "PLC0415"]
+"src/rebasis/storage/*" = ["PLC0415"]
+# torch and scikit-learn are imported inside the functions that
+# use them, so that `import rebasis` neither pulls in torch nor pays sklearn's
+# import cost on a code path that does not need it.
+"src/rebasis/core/registry.py" = ["PLC0415"]
+"src/rebasis/core/scaling.py" = ["PLC0415"]
+"src/rebasis/core/calibration.py" = ["PLC0415"]
+"src/rebasis/core/serialization.py" = ["PLC0415", "BLE001"]
+"src/rebasis/core/selection.py" = ["PLC0415"]
+# Entry-point discovery and backend imports are lazy by nature: importing
+# every optional client library at module load would defeat the point of
+# making them extras.
+"src/rebasis/store/*" = ["PLC0415"]
+"src/rebasis/manifest/*" = ["PLC0415"]
+"src/rebasis/audit/*" = ["PLC0415"]
+"src/rebasis/migrate/*" = ["PLC0415"]
+"src/rebasis/embed/*" = ["PLC0415"]
+# cli is one of the two places allowed to print directly, and it
+# imports lazily so `rebasis --help` does not pay for the whole package.
+# doctor is one long, flat report: every row answers a different diagnostic
+# question. Splitting it into helpers would scatter one
+# screen of output across five functions for no reader benefit.
+# Terminal output is prose too: the en dash in a confidence interval is
+# typography, not a lookalike character to be normalised.
+"src/rebasis/cli/*" = ["PLC0415", "T201", "PLR0915", "RUF001"]
+"src/rebasis/serve/*" = ["PLC0415"]
+# The report is prose for a human reader: en dashes, arrows and ratio
+# separators are typography, not lookalike characters to be normalised.
+"src/rebasis/report/*" = ["PLC0415", "RUF001"]
+"src/rebasis/sample/*" = ["PLC0415"]
+# `errors` and `storage` are imported inside functions so that `config` stays
+# a leaf: it is read at the entry point, before anything else is set up.
+"src/rebasis/config.py" = ["PLC0415"]
+"src/rebasis/probe/*" = ["PLC0415"]
+# `errors` is imported inside the function so that `core.migrations` can be
+# imported for its table alone, which is what the CLI does before it knows
+# whether anything needs upgrading.
+"src/rebasis/core/migrations/*" = ["PLC0415"]
+# The training loop is inherently long: setup, initialisation from the closed
+# form, the epoch loop, early stopping and weight extraction. Splitting it into
+# helpers would spread one algorithm across five functions.
+"src/rebasis/core/residual_mlp.py" = ["PLC0415", "PLR0915"]
+# The M0 spike is a throwaway measurement artefact, not shipped code. It keeps
+# its own conventions: rich console output, long experiment functions, and
+# module-level constants that would be config in the package.
+"spikes/*" = [
+    "T201", "PLR0913", "PLR0915", "PLR2004", "C901", "BLE001",
+    "D", "ANN", "TRY", "EM", "S", "PTH", "PERF", "SLF001",
+    "INP001", "PLR0912", "PLR0911", "PLC0415", "FBT", "DTZ",
+    "RUF001", "RUF002", "RUF003", "E501", "TC003", "PLW3301", "B007",
+    # Linear algebra keeps its conventional names: R for a rotation, U/V/W for
+    # matrices, b for a bias. Renaming them to snake_case would make the code
+    # harder to check against the formulae, not easier.
+    "N803", "N806",
+]
+"tests/*" = ["D", "ANN", "PLR2004", "SLF001", "INP001", "PLC0415"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Direct `open(..., "w")` is banned outside storage/atomic.py.
+# ENOSPC while overwriting in place leaves the old content deleted and the new
+# content unwritten — atomic_write removes that failure mode entirely.
+"os.rename".msg = "Use os.replace (atomic on POSIX and Windows) via rebasis.storage.atomic"
+
+[tool.ruff.lint.isort]
+known-first-party = ["rebasis"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ── mypy ──────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_return_any = true
+show_error_codes = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+# Optional dependencies without stubs. Listing them explicitly rather than
+# globally ignoring missing imports keeps real typos visible.
+# torch is listed here on purpose: it is an OPTIONAL dependency, so
+# type checking must pass whether or not it is installed. That is exactly what
+# the CI "no-torch" job verifies.
+module = [
+    "scipy.*", "sklearn.*", "structlog.*", "safetensors.*",
+    "opentelemetry.*", "threadpoolctl.*", "filelock.*", "ulid.*",
+    "torch", "torch.*", "psutil", "psutil.*", "filelock", "filelock.*",
+    "sentence_transformers.*", "fastembed.*", "chromadb.*", "lancedb.*",
+    "qdrant_client.*", "ranx.*", "usearch.*", "sqlite_vec.*", "zeus.*",
+    "fastembed.*", "faiss.*", "ollama.*", "llama_cpp.*", "openai.*",
+    "langchain.*", "langchain_core.*", "llama_index.*",
+]
+ignore_missing_imports = true
+
+# ── releases: the commits choose the version ─────────────────────────
+[tool.semantic_release]
+# hatch-vcs derives the version from the git tag, so there is no
+# version string in any file for the release tool to rewrite. It tags; that is
+# the whole job.
+version_toml = []
+version_variables = []
+tag_format = "v{version}"
+commit_parser = "conventional"
+build_command = "uv build"
+# The first release is 0.1.0. On 0.x a MINOR bump may break, and is read the way
+# a MAJOR is, so the tool must not "helpfully" promote a breaking change to 1.0
+# on its own.
+major_on_zero = false
+allow_zero_version = true
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.changelog]
+# The changelog is written by towncrier from news fragments, not generated from
+# commit subjects. A subject says what changed; a fragment says what it means
+# for a user, and only one of those is worth reading months later.
+exclude_commit_patterns = ["^chore", "^ci", "^docs", "^test", "^style", "^refactor"]
+
+# ── changelog fragments ──────────────────────────────────────────────
+[tool.towncrier]
+package = "rebasis"
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+underlines = ["", "", ""]
+title_format = "## [{version}] - {project_date}"
+issue_format = "([#{issue}](https://github.com/batuhanzorbeyzengin/rebasis/issues/{issue}))"
+
+# Ordered by what a reader upgrading needs first. "Behaviour change" leads
+# because a silently accepted change of behaviour is the one thing
+# this project will not do: a moved decision threshold has to be written down
+# with its reasoning, above the feature list.
+[[tool.towncrier.type]]
+directory = "behaviour"
+name = "Behaviour changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "performance"
+name = "Performance"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "docs"
+name = "Documentation"
+showcontent = true
+
+# ── pytest ───────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The default run executes only the fast layer. A developer loop longer than
+# ten seconds means the tests stop being run — that is a deliberate decision.
+addopts = "-m 'not gpu and not slow and not network and not perf' --strict-markers --strict-config"
+markers = [
+    "unit: fast, isolated, no I/O (< 10 s total)",
+    "property: hypothesis-driven (< 60 s)",
+    "contract: every registered backend must pass (< 3 min)",
+    "integration: real store or embedder (< 10 min)",
+    "e2e: full CLI flow (< 15 min)",
+    "perf: benchmarks; excluded from the default run",
+    "gpu: requires an accelerator; server only",
+    "slow: golden corpora; server only",
+    "network: downloads models or datasets",
+]
+filterwarnings = [
+    # A DeprecationWarning from our own code is an error — we must not
+    # forget to migrate off something we deprecated ourselves.
+    "error::DeprecationWarning",
+    "ignore::DeprecationWarning:torch.*",
+    "ignore::DeprecationWarning:transformers.*",
+]
+
+# ── coverage ─────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["src/rebasis"]
+branch = true
+omit = ["src/rebasis/_version.py"]
+
+# Public-API docstring coverage, at least 90%. It was named as an enforced rule
+# and enforced by nothing — not a dependency, not a hook, not a CI job. The
+# excluded categories are the ones a docstring adds nothing to: `__init__`
+# repeats the class docstring, a dunder's contract is Python's, a private
+# helper is read next to its caller, and a module docstring is checked by ruff's
+# D100 instead. Measured at 90.1% when this was turned on.
+[tool.interrogate]
+fail-under = 90
+ignore-init-method = true
+ignore-magic = true
+ignore-private = true
+ignore-module = true
+exclude = ["src/rebasis/_version.py"]
+
+[tool.coverage.report]
+# One overall floor, checked in CI. The per-module targets the design
+# names (core 90, probe 85, errors/redaction/chain/atomic/shadow 100) are not
+# expressible here — coverage.py has one `fail_under` — so they are asserted by
+# `tests/unit/test_coverage_floors.py`, which reads the same coverage data.
+fail_under = 75
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+# ── import-linter ────────────────────────────────────────────────────
+[tool.importlinter]
+root_package = "rebasis"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+# The layer contract. Higher layers may import lower ones, never the
+# reverse. `serve`, `probe` and `migrate` are siblings: none imports another.
+# `report` sits above them because it renders a ProbeResult and nothing imports
+# it but the CLI.
+name = "Layer contract"
+type = "layers"
+layers = [
+    "rebasis.cli",
+    "rebasis.report",
+    "rebasis.serve | rebasis.probe | rebasis.migrate",
+    "rebasis.sample",
+    "rebasis.audit",
+    "rebasis.manifest",
+    "rebasis.store | rebasis.embed",
+    "rebasis.core",
+    "rebasis.compute | rebasis.storage",
+    "rebasis.observability",
+    "rebasis.errors | rebasis.types",
+]
+
+[[tool.importlinter.contracts]]
+# "core must depend on nothing". The single exception is
+# observability.get_logger, which is a no-op without OTel.
+name = "errors and types depend on nothing internal"
+type = "forbidden"
+source_modules = ["rebasis.errors", "rebasis.types"]
+forbidden_modules = [
+    "rebasis.observability", "rebasis.compute", "rebasis.core",
+    "rebasis.store", "rebasis.embed",
+]
+
+# NOTE: "compute must not import torch at MODULE level" is deliberately NOT an
+# import-linter contract. import-linter analyses imports statically and counts a
+# function-body `import torch` as a dependency, so it cannot express laziness.
+# The property that actually matters — that `import rebasis` leaves torch out of
+# sys.modules — is enforced by tests/unit/test_lazy_imports.py, which checks the
+# real behaviour rather than an approximation of it.
+
+[[tool.importlinter.contracts]]
+# The hot path must not import torch. A single query's budget is tens of µs;
+# importing torch alone costs far more than that, and the transfer would blow
+# the budget even if the import were free.
+# Scoped to observability, where the property holds STATICALLY. `serve` also
+# must not import torch, but it reaches core.registry, which names
+# residual_mlp inside a function body — import-linter counts that as a
+# dependency and cannot tell a lazy import from an eager one. The property that
+# matters (torch absent from sys.modules after `import rebasis.serve`) is
+# asserted in tests/unit/test_lazy_imports.py, which measures the real
+# behaviour instead of a static approximation of it.
+name = "observability never imports torch"
+type = "forbidden"
+source_modules = ["rebasis.observability"]
+forbidden_modules = ["torch"]

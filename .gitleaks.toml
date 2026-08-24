@@ -1,0 +1,37 @@
+# rebasis — secret scanning
+#
+# Extends the gitleaks default rule set. EC2 public DNS names and local PEM
+# paths are not in the default patterns, and they are exactly what could leak
+# through the design document and the helper scripts.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "ec2-public-dns"
+description = "EC2 public DNS name"
+regex = '''ec2-\d+-\d+-\d+-\d+\.[a-z0-9-]+\.compute\.amazonaws\.com'''
+tags = ["infra", "host"]
+
+[[rules]]
+id = "local-pem-path"
+description = "Path to a .pem key on a local filesystem"
+regex = '''/(Users|home)/[^\s"']+\.pem'''
+tags = ["infra", "key"]
+
+[[rules]]
+id = "aws-instance-id"
+description = "EC2 instance identifier"
+regex = '''\bi-[0-9a-f]{17}\b'''
+tags = ["infra"]
+
+[allowlist]
+description = "Templates and placeholders"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''\.env\.example$''',
+]
+regexes = [
+  '''<ec2-public-dns>''',
+  '''~/\.ssh/<key>\.pem''',
+]

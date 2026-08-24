@@ -1,0 +1,1 @@
+`probe` no longer tells a run that was given `--queries` to supply `--queries`. When the confidence interval straddled a decision threshold the remedy was printed unconditionally, so a T1 run — one already using a real query log — was advised to do the thing it had done. It now says only "Increase --sample" once the query log is there.

@@ -1,0 +1,1 @@
+`migrate --dry-run` (`-n`) prints the plan and stops. `gc` accepts the same flag for the dry run it already does by default, because `-n` is what people type, and `gc --apply --dry-run` is now refused rather than silently resolved one way.

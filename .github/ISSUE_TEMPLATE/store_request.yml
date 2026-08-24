@@ -1,0 +1,30 @@
+name: Store backend request
+description: Ask for support for a vector store
+labels: [store, enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a store is three steps: write the file, register the entry
+        point, make the contract test pass. Contributions are very welcome — this
+        template exists to establish whether the store can support what rebasis
+        needs before anyone writes code.
+  - type: input
+    id: store
+    attributes:
+      label: Which store
+    validations:
+      required: true
+  - type: checkboxes
+    id: capabilities
+    attributes:
+      label: What its client library can do
+      description: |
+        `probe` and the bridge phase need reads. `migrate` additionally needs
+        writes. Partial support is fine and useful — it just has to be declared
+        honestly.
+      options:
+        - label: Read vectors back out (not only write them)
+        - label: Iterate the whole collection
+        - label: Replace the vector of an existing record
+        - label: Update in place, without rebuilding the collection

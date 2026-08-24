@@ -1,0 +1,1 @@
+The store contract suite runs against every embeddable backend — chroma, lancedb, qdrant, sqlite-vec and faiss — rather than the in-memory store alone. The two properties it checks hardest, lazy iteration and truthful capabilities, are precisely the ones a real client library gets wrong and a dictionary cannot.

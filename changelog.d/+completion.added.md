@@ -1,0 +1,1 @@
+Shell completion is enabled: `rebasis --install-completion`. It was switched off, and the arguments this CLI takes are the kind nobody types correctly twice — store URIs like `chroma:///long/path#collection` and model ids like `sentence-transformers/all-MiniLM-L6-v2`.
