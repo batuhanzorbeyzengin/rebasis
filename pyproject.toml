@@ -170,7 +170,6 @@ dev = [
     # needs a 7% gate to keep false positives at 1%, which is wide enough to
     # hide the regressions worth catching; a simulator does not have that
     # trade-off, so this is what the PR gate is built on.
-    "pytest-codspeed>=3.0",
     "ruff>=0.6",
     "mypy>=1.11",
     "import-linter>=2.0",

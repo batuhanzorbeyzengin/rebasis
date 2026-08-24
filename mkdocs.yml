@@ -24,7 +24,7 @@ site_dir: site
 
 exclude_docs: |
   # Gitignored: the design document. It carries real host details and is
-  # written in Turkish, while the repository is English-only.
+  # local to the maintainer's machine.
   _local/
   design/
   # Fragment instructions, not a page.

@@ -28,8 +28,8 @@ scripts/
 # The just recipes that call scripts/. Imported optionally by the committed
 # justfile, so its absence in a clone is silent rather than a broken recipe.
 justfile.local
-# The committable copy of the design document: written in Turkish, and this
-# repository is English-only.
+# The committable copy of the design document. It carries real host details
+# and stays on the maintainer's machine.
 docs/design/
 # A page about one private machine: its SSH alias, its idle-stop cron, the
 # wrapper in scripts/. What a contributor actually needs from it — which test

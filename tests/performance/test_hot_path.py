@@ -29,7 +29,7 @@ the budget was never calibrated for. They assert what is portable:
 3. **Batching amortises.** Per-query cost inside a batch must be far below the
    single-query cost, since that is what makes the MLP usable at all.
 
-The absolute numbers belong in CodSpeed, where the runner is fixed.
+Absolute numbers belong on the measurement host, where the hardware is known.
 """
 
 from __future__ import annotations

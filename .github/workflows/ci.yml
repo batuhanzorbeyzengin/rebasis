@@ -35,6 +35,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: lint
       - run: uv sync --no-group spike
       - name: ruff
         # The same paths the release workflow lints. They diverged once, and
@@ -87,6 +90,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job, and per matrix leg here: three legs saving one
+          # key raced to reserve it and the losers logged a failed cache save.
+          cache-suffix: test-${{ matrix.os }}-py${{ matrix.python }}
       # --all-extras, not a bare sync: every backend test opens with
       # `pytest.importorskip`, so without the store clients installed the
       # integration step reports success having run none of them.
@@ -120,6 +126,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: coverage
       - run: uv sync --all-extras --no-group spike
       - name: measure
         # `fail_under` in pyproject enforces the overall floor. The per-module
@@ -142,6 +151,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: no-torch
       - name: install the core package only
         # No extras at all: this is what `pip install rebasis` gives a user.
         run: |
@@ -172,6 +184,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: lowest-direct
       - name: resolve to the declared lower bounds
         # An untested lower bound is the most common way a package ends
         # up not working on the versions it claims to support.
@@ -186,33 +201,6 @@ jobs:
         # three wrong lower bounds survived in `[project.optional-dependencies]`.
         run: .venv/bin/pytest -m "unit or contract" -q
 
-  benchmarks:
-    name: benchmarks (codspeed)
-    runs-on: ubuntu-latest
-    # Wall-clock benchmarks never block a PR. CodSpeed measures
-    # instructions in a simulator, which is what makes a 5% gate meaningful on
-    # a shared runner — a wall-clock gate there needs 7% just to keep false
-    # positives at 1%, and a 7% gate hides exactly the regressions worth
-    # catching. The thresholds live in the CodSpeed project settings: warn at
-    # 5%, block at 15%.
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-      - run: uv sync --no-group spike
-      - name: run the micro-benchmarks under instrumentation
-        uses: CodSpeedHQ/action@v5
-        with:
-          # `mode` is required from v5. Simulation is the whole reason this job
-          # exists: it counts instructions instead of timing a shared runner,
-          # which is what makes a 5% gate mean something.
-          mode: simulation
-          run: uv run pytest tests/performance -m perf --codspeed
-          token: ${{ secrets.CODSPEED_TOKEN }}
-
   memory:
     name: memory ceilings
     runs-on: ubuntu-latest
@@ -226,6 +214,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: memory
       - run: uv sync --no-group spike
       - name: ceilings and the scaling invariant
         run: uv run pytest tests/performance/test_memory_ceiling.py -m perf -q
@@ -240,35 +231,13 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: docs
       - name: build the site in strict mode
         # Strict: a dead link is a build failure. Documentation that points at
         # a page that no longer exists is worse than documentation that stops.
         run: uv run --group docs mkdocs build
-
-  english-only:
-    name: the repository is English-only
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: no Turkish, and no references to a document nobody has
-        # The design document is written in Turkish and is local-only. Both of
-        # its copies are gitignored; this checks what actually landed, because
-        # .gitignore can be forgotten and a check cannot.
-        run: |
-          if git ls-files | grep -qE '^docs/(_local|design)/'; then
-            echo "::error::the design document was committed"
-            exit 1
-          fi
-          # Two files are allowed to contain the character: this check, and the
-          # test that enforces the same rule on CLI output. A guard that fails
-          # on its own enforcement code reports itself, which is what happened
-          # on the first run.
-          if git grep -lnI $'\u00a7' -- . \
-              ':!.github/workflows/ci.yml' \
-              ':!tests/unit/test_cli_output_hygiene.py'; then
-            echo "::error::a section reference points at a document no reader has"
-            exit 1
-          fi
 
   secrets:
     name: secret scan

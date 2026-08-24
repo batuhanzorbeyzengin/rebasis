@@ -41,17 +41,15 @@ through a migration instead of at second zero.
 
 ## Performance tests
 
-Four layers:
+Three layers:
 
-1. **Micro-benchmarks** — adapter `apply`, `.rbs` loading, normalisation, top-k.
-   Run on every PR under CodSpeed's instruction-count instrumentation.
-2. **Memory ceilings** — absolute thresholds. Exceeding one **blocks** a PR:
+1. **Memory ceilings** — absolute thresholds. Exceeding one **blocks** a PR:
    unlike a wall-clock comparison, a ceiling has no false-positive trade-off.
-3. **The scaling test** — peak memory measured at three corpus sizes and
+2. **The scaling test** — peak memory measured at three corpus sizes and
    asserted *not* to track N. This is the guard on the architecture's central
    invariant.
-4. **Macro benchmarks** — end-to-end against the performance budgets, on the server,
-   nightly.
+3. **Macro benchmarks** — end-to-end against the performance budgets, on the
+   server, nightly.
 
 Wall-clock benchmarks never block a PR. On a shared runner a wall-clock gate
 needs 7% just to keep false positives at 1%, and a 7% gate hides exactly the

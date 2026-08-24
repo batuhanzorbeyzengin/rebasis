@@ -57,8 +57,7 @@ repos:
   # ── local hooks ──────────────────────────────────────────────────────
   - repo: local
     hooks:
-      # The design document is never committed: it carries real host details
-      # and it is written in Turkish, while the repository is English-only.
+      # The design document is never committed: it carries real host details.
       # .gitignore blocks both copies; this hook also blocks `git add -f`.
       - id: no-design-doc
         name: the design document must not be committed

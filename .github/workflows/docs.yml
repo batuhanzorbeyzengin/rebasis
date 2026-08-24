@@ -32,6 +32,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          # Distinct per job: parallel jobs sharing one key raced to
+          # reserve it, and the losers logged a failed cache save.
+          cache-suffix: build
       - name: regenerate the generated pages
         # The catalogues are generated from the code. Building from a stale
         # checkout would publish a reference that does not match the release.

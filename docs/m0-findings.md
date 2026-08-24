@@ -915,7 +915,7 @@ Stated explicitly so the numbers are not read more broadly than they support.
    differ for `bge-m3` (1024) or 768-dimensional families, especially the
    centering gain and LA's rank selection.
 3. **One language, one domain.** All four corpora are English scientific or
-   argumentative text. The Turkish-language angle was not measured at all.
+   argumentative text. No non-English corpus was measured at all.
 4. **Sparse qrels.** Three of the four corpora have ~1 relevant document per
    query. Part of T1's "looseness" comes from that; on a densely judged corpus
    (e.g. TREC) the T0/T1 gap could look different.

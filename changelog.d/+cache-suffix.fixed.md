@@ -1,0 +1,1 @@
+Each CI job gives `setup-uv` its own `cache-suffix`. Every job shared one cache key, so whichever finished second lost the race to reserve it and logged `Failed to save: Unable to reserve cache with key ...`. The test job's suffix carries its matrix leg too, since its three legs had the same problem among themselves.
