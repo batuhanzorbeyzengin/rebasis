@@ -35,9 +35,20 @@ classifiers = [
 # rule run on numpy/scipy/sklearn alone.
 dependencies = [
     "numpy>=1.26",
-    "scipy>=1.11",
+    # 1.11.2, not 1.11: the project requires Python 3.12, and scipy gained
+    # cp312 wheels at 1.11.2. At 1.11.1 `--resolution lowest-direct` has no
+    # wheel to take, falls back to a meson source build and dies there — which
+    # is what the lowest-direct job was reporting.
+    "scipy>=1.11.2",
     "scikit-learn>=1.4",
-    "typer>=0.12",
+    # 0.16, not 0.12. Three separate reasons, each found by the lowest-direct
+    # job: 0.12 cannot convert a `Path | None` annotation ("Type not yet
+    # supported"), everything up to 0.15.2 calls click's `Parameter.make_metavar()`
+    # without the `ctx` argument click now requires, and 0.15.4 caps `click<8.2`
+    # — where `CliRunner` still merges stderr into stdout, so the separation
+    # `--json` depends on cannot even be asserted. 0.16 is the first release
+    # with none of the three.
+    "typer>=0.16",
     "rich>=13.0",
     "structlog>=24.1",
     "pydantic-settings>=2.2",
@@ -461,6 +472,12 @@ filterwarnings = [
     "error::DeprecationWarning",
     "ignore::DeprecationWarning:torch.*",
     "ignore::DeprecationWarning:transformers.*",
+    # chromadb 0.5.x reads `model_fields` off a pydantic instance, which
+    # pydantic 2.11 deprecated. The floor job pairs the oldest chromadb with the
+    # newest pydantic, so it is the only place this fires. Raising the chromadb
+    # floor instead would withdraw the 0.5.5 support the README claims, over a
+    # warning in someone else's code.
+    "ignore::DeprecationWarning:chromadb.*",
 ]
 
 # ── coverage ─────────────────────────────────────────────────────────

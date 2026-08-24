@@ -4915,7 +4915,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "scikit-learn", specifier = ">=1.4" },
-    { name = "scipy", specifier = ">=1.11" },
+    { name = "scipy", specifier = ">=1.11.2" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'sentence-transformers'", specifier = ">=3.0" },
     { name = "sqlite-vec", marker = "extra == 'all'", specifier = ">=0.1.6" },
@@ -4924,7 +4924,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.2" },
     { name = "threadpoolctl", specifier = ">=3.2" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.16" },
     { name = "zeus-ml", marker = "extra == 'energy'", specifier = ">=0.10" },
 ]
 provides-extras = ["all", "chroma", "energy", "eval", "faiss", "fastembed", "lancedb", "langchain", "llama-cpp", "llamaindex", "ollama", "openai", "otel", "qdrant", "sentence-transformers", "sqlite-vec", "torch"]
