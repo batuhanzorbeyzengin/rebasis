@@ -1,12 +1,29 @@
-# rebasis
+<p align="center">
+  <!-- Absolute, not relative: this README is also the PyPI long description,
+       and PyPI cannot resolve a repository-relative path. -->
+  <img src="https://raw.githubusercontent.com/batuhanzorbeyzengin/rebasis/main/docs/assets/logo-banner.png"
+       alt="rebasis" width="440">
+</p>
 
-**Change the embedding model of your local RAG without deleting the index.**
+<h1 align="center">rebasis</h1>
 
-[**Docs**](https://batuhanzorbeyzengin.github.io/rebasis/) · [**Backends**](#supported-backends) · [**The evidence**](docs/bridge-band.md) · [**Limits**](#limits--stated-plainly) · [**Roadmap**](ROADMAP.md)
+<p align="center">
+  <strong>Change the embedding model of your local RAG without deleting the index.</strong>
+</p>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
-[![Version](https://img.shields.io/badge/version-0.1-orange)](#status-01)
+<p align="center">
+  <a href="https://batuhanzorbeyzengin.github.io/rebasis/"><strong>Docs</strong></a> ·
+  <a href="#supported-backends"><strong>Backends</strong></a> ·
+  <a href="docs/bridge-band.md"><strong>The evidence</strong></a> ·
+  <a href="#limits--stated-plainly"><strong>Limits</strong></a> ·
+  <a href="ROADMAP.md"><strong>Roadmap</strong></a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python"></a>
+  <a href="#status-01"><img src="https://img.shields.io/badge/version-0.1-orange" alt="Version"></a>
+</p>
 
 A better embedding model comes out. Your vault, codebase or agent memory is
 indexed with the old one, the two coordinate systems have nothing to do with

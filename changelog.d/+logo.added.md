@@ -1,0 +1,1 @@
+The project has a logo, and the README leads with it. The artwork is kept at `docs/assets/logo.png`; the README uses a trimmed banner crop of it, referenced by absolute URL because the same file is the PyPI long description and PyPI cannot resolve a repository-relative path.
