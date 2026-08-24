@@ -1,0 +1,96 @@
+# ── local environment and secrets ─────────────────────────────────
+# .env.example is the committed template and is deliberately not matched:
+# these are exact names, so ".env" never catches ".env.example".
+.env
+.env.local
+.env.*.local
+docs/_local/
+*.pem
+*.ppk
+*.key
+*_rsa
+*_ed25519
+.ssh/
+
+# ── local-only: never part of a clone ─────────────────────────────
+# Developer scripts for this machine and its GPU host: an SSH alias, an
+# instance id, a bootstrap that assumes one AMI. Useless to anyone else and a
+# standing invitation to leak infrastructure detail. The one script a reader
+# does need, the golden-corpus builder, lives in tools/.
+scripts/
+# Agent configuration for this working copy.
+.claude/
+# The nightly GPU workflow. It only ever runs on the maintainer's own host and
+# drives it through scripts/, which is not in a clone either — so in a public
+# repository it could only ever fail. It stays here, next to the scripts it
+# calls.
+.github/workflows/gpu-tests.yml
+# The just recipes that call scripts/. Imported optionally by the committed
+# justfile, so its absence in a clone is silent rather than a broken recipe.
+justfile.local
+# The committable copy of the design document: written in Turkish, and this
+# repository is English-only.
+docs/design/
+# A page about one private machine: its SSH alias, its idle-stop cron, the
+# wrapper in scripts/. What a contributor actually needs from it — which test
+# layers a clone cannot run, and why — is in docs/development/testing.md.
+docs/development/remote-gpu.md
+
+# ── generated and temporary ───────────────────────────────────────
+src/rebasis/_version.py
+reports/
+tests/golden/data/
+*.rbs
+.rebasis/
+.rebasis-m0-cache/
+# REBASIS_LOG_FILE can be pointed anywhere, including into the working tree.
+*.log
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+# No "MANIFEST" rule here, on purpose. git matches ignore patterns case
+# insensitively when core.ignorecase is on (the default on macOS), so the
+# distutils-era "MANIFEST" also matched src/rebasis/manifest/ and silently
+# excluded that package from every commit. The build backend is hatchling,
+# which never writes a MANIFEST, so the rule only ever cost us source files.
+
+# ── virtualenvs and tool caches ───────────────────────────────────
+# scripts/remote.sh excludes '.venv*/', so per-target envs like .venv-cpu
+# already exist in practice; match the same shape here.
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+# import-linter writes its own .gitignore inside this directory. Relying on a
+# file the tool happens to create is not a rule; this is.
+.import_linter_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.benchmarks/
+.memray/
+*.memray
+
+# ── docs ──────────────────────────────────────────────────────────
+site/
+
+# ── OS and editors ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,122 @@
+# rebasis — release
+#
+# The version is not chosen by a human. Commit messages choose it:
+# python-semantic-release parses them, works out the next version, writes the
+# changelog, tags, and pushes. The git tag is the single source of the version, and
+# hatch-vcs derives the package version from it — so nothing is edited by hand
+# and nothing can disagree.
+#
+# Publishing uses PyPI Trusted Publishing: no API token exists to leak.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Work out the next version and stop"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The release checklist, as a gate rather than a document. A
+  # release that skips its own checklist is how a broken sdist reaches PyPI.
+  verify:
+    name: pre-release checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: gates
+        run: |
+          uv run ruff check src tests spikes examples
+          uv run ruff format --check src tests spikes examples
+          uv run mypy src
+          uv run lint-imports
+      - name: the full suite, except what needs the GPU host
+        run: uv run pytest -m "not gpu and not slow and not network" -q
+      - name: generated catalogues are current
+        run: |
+          uv run python -m rebasis.report.catalog --out docs/reference
+          git diff --exit-code docs/reference
+      - name: the docs build
+        run: uv run --group docs mkdocs build
+
+  build:
+    name: build and check the artifacts
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - name: build
+        run: uv build
+      - name: the sdist installs and imports
+        # A wheel that works and an sdist that does not is a real and common
+        # failure: the sdist is what a source build and most distro packagers
+        # use, and nothing else in CI exercises it.
+        run: |
+          uv venv --python 3.12 /tmp/sdist-check
+          VIRTUAL_ENV=/tmp/sdist-check uv pip install dist/*.tar.gz
+          VIRTUAL_ENV=/tmp/sdist-check uv run --no-project python -c \
+            "import rebasis; print(rebasis.__version__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    name: tag and publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rebasis
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: astral-sh/setup-uv@v5
+      - name: work out the next version from the commits
+        id: version
+        run: |
+          # --no-changelog: towncrier owns CHANGELOG.md. Letting the release
+          # tool generate one too would have two writers on one file, and the
+          # one that loses is the one written for a reader.
+          uv run --with python-semantic-release semantic-release version \
+            --no-changelog \
+            ${{ inputs.dry_run && '--print' || '--no-push --no-vcs-release' }}
+      - name: stop here on a dry run
+        if: ${{ inputs.dry_run }}
+        run: echo "Dry run — nothing was tagged or published."
+      - name: push the tag
+        if: ${{ !inputs.dry_run }}
+        run: git push --follow-tags
+      - name: rebuild at the tagged version
+        # Rebuilt rather than reusing the artifact from `build`: hatch-vcs reads
+        # the version from the tag, and the earlier build predates it.
+        if: ${{ !inputs.dry_run }}
+        run: uv build
+      - name: publish
+        if: ${{ !inputs.dry_run }}
+        # Trusted Publishing — the token is minted for this run and expires
+        # with it. There is no long-lived secret to leak.
+        uses: pypa/gh-action-pypi-publish@release/v1

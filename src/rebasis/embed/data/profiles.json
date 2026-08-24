@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "Known encoding profiles. Values come from each model card's official",
+    "retrieval instructions, not from guesswork.",
+    "",
+    "Getting a prefix wrong produces no error and no warning — it only lowers",
+    "quality, which is the hardest kind of failure to attribute. That is why",
+    "this table exists, and why an adapter refuses to load when its profile",
+    "fingerprint does not match rather than degrading quietly.",
+    "",
+    "A user can extend this file, or pass --profile on the command line."
+  ],
+  "profiles": {
+    "BAAI/bge-base-en-v1.5": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "cls",
+      "query_prefix": "Represent this sentence for searching relevant passages: "
+    },
+    "BAAI/bge-large-en-v1.5": {
+      "dim": 1024,
+      "normalize": true,
+      "pooling": "cls",
+      "query_prefix": "Represent this sentence for searching relevant passages: "
+    },
+    "BAAI/bge-m3": {
+      "dim": 1024,
+      "normalize": true,
+      "pooling": "cls"
+    },
+    "BAAI/bge-small-en-v1.5": {
+      "dim": 384,
+      "normalize": true,
+      "pooling": "cls",
+      "query_prefix": "Represent this sentence for searching relevant passages: "
+    },
+    "intfloat/e5-base-v2": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean",
+      "query_prefix": "query: ",
+      "document_prefix": "passage: "
+    },
+    "intfloat/e5-large-v2": {
+      "dim": 1024,
+      "normalize": true,
+      "pooling": "mean",
+      "query_prefix": "query: ",
+      "document_prefix": "passage: "
+    },
+    "intfloat/e5-small-v2": {
+      "dim": 384,
+      "normalize": true,
+      "pooling": "mean",
+      "query_prefix": "query: ",
+      "document_prefix": "passage: "
+    },
+    "intfloat/multilingual-e5-base": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean",
+      "query_prefix": "query: ",
+      "document_prefix": "passage: "
+    },
+    "jinaai/jina-embeddings-v2-base-en": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean"
+    },
+    "minishlab/potion-base-8M": {
+      "dim": 256,
+      "normalize": true,
+      "pooling": "mean"
+    },
+    "mixedbread-ai/mxbai-embed-large-v1": {
+      "dim": 1024,
+      "normalize": true,
+      "pooling": "cls",
+      "query_prefix": "Represent this sentence for searching relevant passages: "
+    },
+    "nomic-ai/nomic-embed-text-v1.5": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean",
+      "matryoshka_dim": 768,
+      "query_prefix": "search_query: ",
+      "document_prefix": "search_document: "
+    },
+    "sentence-transformers/all-MiniLM-L12-v2": {
+      "dim": 384,
+      "normalize": true,
+      "pooling": "mean"
+    },
+    "sentence-transformers/all-MiniLM-L6-v2": {
+      "dim": 384,
+      "normalize": true,
+      "pooling": "mean"
+    },
+    "sentence-transformers/all-mpnet-base-v2": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean"
+    },
+    "thenlper/gte-base": {
+      "dim": 768,
+      "normalize": true,
+      "pooling": "mean"
+    }
+  }
+}

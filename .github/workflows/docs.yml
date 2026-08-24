@@ -1,0 +1,53 @@
+# rebasis — publish the documentation site
+#
+# The site is built in strict mode on every PR by the `docs` job in ci.yml; this
+# workflow only publishes what already passed.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one halfway: a partial publish
+# leaves the site in a state nobody chose.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the version from tags, and the site shows it.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: regenerate the generated pages
+        # The catalogues are generated from the code. Building from a stale
+        # checkout would publish a reference that does not match the release.
+        run: uv run python -m rebasis.report.catalog --out docs/reference
+      - name: build
+        run: uv run --group docs mkdocs build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

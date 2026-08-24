@@ -1,0 +1,1 @@
+`probe` now compares bridging against keeping the current model, not only against a full reindex. Measured on BEIR/scifact, MiniLM to bge-small: bridging recovered 0.903 of a full reindex while keeping the current model gave 0.944 — so the previous rule recommended migrating to something measurably worse.

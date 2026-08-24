@@ -1,0 +1,1 @@
+`--report` wrote through `write_text`, which truncates before it writes: a full disk or a Ctrl-C at the wrong moment destroyed the previous report, and a probe run is minutes of embedding to reproduce. It goes through the atomic writer now, like every other file rebasis owns.

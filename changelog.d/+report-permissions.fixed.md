@@ -1,0 +1,1 @@
+A report written with `--report` is created with the permissions an ordinary write would give it. Routing it through the atomic writer had it inherit 0600 from the temporary file underneath, which is the right default for rebasis' own state directory and wrong for a file the user named and may want to serve or send.

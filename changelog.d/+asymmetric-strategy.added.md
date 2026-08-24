@@ -1,0 +1,1 @@
+`auto` now fits and measures both adapter strategies for asymmetric models — one shared adapter, and one fitted on query-encoded pairs — instead of choosing between them on principle. The winner carries an `@query` suffix when the query-specific fit won.

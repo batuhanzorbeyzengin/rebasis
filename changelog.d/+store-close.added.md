@@ -1,0 +1,1 @@
+`close()` and context-manager support on the Qdrant and sqlite-vec backends. Qdrant's local mode takes an exclusive lock on its storage folder, so a handle that is never released makes the next read fail rather than wait.

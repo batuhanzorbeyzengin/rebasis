@@ -1,0 +1,1 @@
+Migrate-and-rollback integration tests across every writable backend — chroma, lancedb, qdrant, sqlite-vec and faiss — checking that the vectors actually change, the record count does not, text survives and `rollback` restores the originals. Previously this was covered on the in-memory store and by hand on Chroma.

@@ -1,0 +1,49 @@
+# A minimal OpenTelemetry Collector for looking at what rebasis emits.
+#
+# Not a production configuration. It accepts OTLP over HTTP and prints
+# everything to the console, which is what you want when the question is "is
+# anything arriving at all".
+#
+#   docker run --rm -p 4318:4318 \
+#     -v "$PWD/collector.yaml:/etc/otelcol/config.yaml" \
+#     otel/opentelemetry-collector:latest
+#
+# Then, in another terminal:
+#
+#   export REBASIS_OTEL_ENABLED=1
+#   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#   rebasis probe --store ... --old ... --new ...
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Without this, a long migration's spans arrive one at a time and the console
+  # output is unreadable.
+  batch:
+    timeout: 5s
+
+exporters:
+  debug:
+    # `detailed` prints every attribute. That is the point of this config; a
+    # real one would use `normal` and forward somewhere.
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

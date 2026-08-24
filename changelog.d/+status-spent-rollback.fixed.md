@@ -1,0 +1,1 @@
+`rebasis status` showed "available" in the rollback column for a job that had already been rolled back, offering something that was gone. It now reports availability only while a rollback is actually possible.

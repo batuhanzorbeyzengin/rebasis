@@ -1,0 +1,1 @@
+The report now says when recall and ranking disagree about whether bridging helps. An adapter can return the same documents in a worse order; the decision runs on recall and could not see it. Which metric matters depends on whether a model or a person consumes the results, so the disagreement is surfaced rather than resolved.

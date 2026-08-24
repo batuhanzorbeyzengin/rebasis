@@ -1,0 +1,49 @@
+{
+  "dataset": "beir/scifact",
+  "n_documents": 5000,
+  "n_queries": 295,
+  "scenarios": {
+    "same_family": {
+      "old": "sentence-transformers/all-MiniLM-L6-v2",
+      "new": "sentence-transformers/all-MiniLM-L12-v2",
+      "note": "same family, consecutive version, same dimension",
+      "old_dim": 384,
+      "new_dim": 384
+    },
+    "different_family": {
+      "old": "sentence-transformers/all-MiniLM-L6-v2",
+      "new": "BAAI/bge-small-en-v1.5",
+      "note": "different family, same dimension, asymmetric query prefix",
+      "old_dim": 384,
+      "new_dim": 384
+    },
+    "prefix_trap": {
+      "old": "sentence-transformers/all-MiniLM-L6-v2",
+      "new": "intfloat/e5-small-v2",
+      "note": "symmetric to asymmetric: collapses if prefix handling breaks",
+      "old_dim": 384,
+      "new_dim": 384
+    },
+    "hard_drift": {
+      "old": "sentence-transformers/all-MiniLM-L6-v2",
+      "new": "minishlab/potion-base-8M",
+      "note": "static distilled embeddings \u2014 a genuinely different architecture",
+      "old_dim": 384,
+      "new_dim": 256
+    },
+    "large_upgrade": {
+      "old": "minishlab/potion-base-8M",
+      "new": "BAAI/bge-base-en-v1.5",
+      "note": "weak old model, strong new one: low ARR, break-even above 1",
+      "old_dim": 256,
+      "new_dim": 768
+    }
+  },
+  "files": {
+    "same_family.npz": "5cd9436a22ecff4eb83e5dd6b3439dfa1bebb9c732fac93ec38b1b9dac3c3285",
+    "different_family.npz": "33476fc7f3b25c9b37066ca214b8a84e30469be336c5bc0ca87e6322798a296c",
+    "prefix_trap.npz": "8a37b17bca3e1ae056fa0dea18f3f2b5c5837853ee5019062953c572e45fd634",
+    "hard_drift.npz": "faece04787490a0834702fe60b3ced7a37148eb089e2e41b178fa6d1b44f2221",
+    "large_upgrade.npz": "cf133fc99c481fdfffe3ddcbbbb1bccccb5bae379c10bbea0837711ce2dd149a"
+  }
+}

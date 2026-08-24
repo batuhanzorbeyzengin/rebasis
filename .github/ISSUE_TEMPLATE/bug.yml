@@ -1,0 +1,37 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please do not paste corpus content.** rebasis is built so that document
+        text, queries and vectors never leave your machine — please keep
+        it that way in issues too. Ids, counts and error codes are enough.
+  - type: input
+    id: version
+    attributes:
+      label: rebasis version
+      description: "`rebasis version`"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: rebasis doctor
+      description: Paste the output. It carries no PII.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: code
+    attributes:
+      label: Error code
+      description: "The RB-Exxxx code, if there was one"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got.
+    validations:
+      required: true

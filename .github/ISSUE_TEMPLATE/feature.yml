@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest something rebasis should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things make a feature request easy to act on: the situation that
+        prompted it, and what you did instead. Both say more than a description
+        of the feature does.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What were you trying to do?
+      description: The situation, not the solution.
+      placeholder: |
+        I have a 200k-chunk vault in Weaviate and wanted to know whether moving
+        to a newer model was worth it, but rebasis has no Weaviate backend.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What did you do instead?
+      description: >
+        Including "gave up" — that is a useful answer, and it tells us how much
+        the gap costs.
+    validations:
+      required: false
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like rebasis to do?
+      description: If you have a shape in mind, describe it. If not, leave this blank.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of rebasis?
+      options:
+        - probe — measurement and the decision rule
+        - fit — adapters and the .rbs format
+        - migrate — rewriting an index
+        - store backend
+        - embedding backend
+        - CLI or reports
+        - documentation
+        - something else / not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: >
+            If this is about measurement quality, I can share the numbers
+            (`rebasis probe --report`) — with no document text in them.
+          required: false

@@ -1,0 +1,1 @@
+`rebasis[all]` now includes the ollama and OpenAI-compatible embedders, which have registered entry points and so were listed by `rebasis doctor` while being impossible to open. torch, llama-cpp, langchain, llamaindex and energy stay out on purpose; the reason for each is in `pyproject.toml`.

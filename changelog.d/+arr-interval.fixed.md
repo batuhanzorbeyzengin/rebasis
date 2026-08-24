@@ -1,0 +1,1 @@
+ARR's confidence interval is now an interval for ARR. It bootstrapped only the numerator, so at T1 — where the oracle is imperfect — the point estimate could fall outside its own range (`ARR 0.908`, `CI 0.712-0.808`). Replaced with a paired ratio bootstrap.
