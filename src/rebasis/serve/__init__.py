@@ -9,7 +9,26 @@ and a host→device→host transfer alone exceeds it.
 from __future__ import annotations
 
 from rebasis.serve.bridge import Bridge
+from rebasis.serve.cascade import (
+    Cascade,
+    CascadeStats,
+    DiskVectorCache,
+    MemoryVectorCache,
+    VectorCache,
+)
 from rebasis.serve.hybrid import calibrated_merge, reciprocal_rank_fusion
 from rebasis.serve.integrations import wrap_retriever
+from rebasis.serve.mixed import MixedSpaceSearch
 
-__all__ = ["Bridge", "calibrated_merge", "reciprocal_rank_fusion", "wrap_retriever"]
+__all__ = [
+    "Bridge",
+    "Cascade",
+    "CascadeStats",
+    "DiskVectorCache",
+    "MemoryVectorCache",
+    "MixedSpaceSearch",
+    "VectorCache",
+    "calibrated_merge",
+    "reciprocal_rank_fusion",
+    "wrap_retriever",
+]

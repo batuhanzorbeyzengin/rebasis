@@ -57,7 +57,14 @@ def reciprocal_rank_fusion(*result_sets: Sequence[Hit], k: int, rrf_k: int = RRF
         for hit in hits:
             scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (rrf_k + hit.rank + 1)
 
-    ordered = sorted(scores.items(), key=lambda item: -item[1])[:k]
+    # Ties broken on the id, not on insertion order. Every result set starts at
+    # rank 0, so each one's best hit scores exactly `1/(rrf_k + 1)` and a
+    # first-place tie is the *common* case rather than an edge one — and a
+    # stable sort over a dict filled set by set would hand every one of them to
+    # whichever set was passed first. On a half-migrated index that is a
+    # standing bias toward one embedding space, which is precisely what fusing
+    # by rank is supposed to avoid.
+    ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:k]
     return [_Hit(id=doc_id, score=score, rank=rank) for rank, (doc_id, score) in enumerate(ordered)]
 
 
@@ -94,5 +101,8 @@ def calibrated_merge(
     for hit in new_hits:
         merged[hit.id] = max(merged.get(hit.id, float("-inf")), hit.score)
 
-    ordered = sorted(merged.items(), key=lambda item: -item[1])[:k]
+    # Same tie-break as the fusion path, for the same reason. Calibrated scores
+    # collide far less often than RRF's, but "less often" is not "never" and a
+    # tie resolved by which side was passed first is a bias either way.
+    ordered = sorted(merged.items(), key=lambda item: (-item[1], item[0]))[:k]
     return [_Hit(id=doc_id, score=score, rank=rank) for rank, (doc_id, score) in enumerate(ordered)]

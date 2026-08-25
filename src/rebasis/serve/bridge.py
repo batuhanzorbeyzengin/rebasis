@@ -138,6 +138,19 @@ class Bridge:
         return self._manifest.adapter_type
 
     @property
+    def calibrator(self) -> ScoreCalibrator | None:
+        """The score calibrator, for a caller that has to merge two rankings.
+
+        Exposed because merging results from two embedding spaces needs the
+        calibrator itself rather than the mapping :meth:`calibrate_scores`
+        applies — :class:`~rebasis.serve.mixed.MixedSpaceSearch` hands it to
+        `calibrated_merge`, which decides per document rather than per array.
+        ``None`` when the adapter carries no calibrator, which is the signal to
+        fall back to rank fusion.
+        """
+        return self._calibrator
+
+    @property
     def has_calibrator(self) -> bool:
         """Whether score calibration is available."""
         return self._calibrator is not None
