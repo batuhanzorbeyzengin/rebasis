@@ -26,6 +26,7 @@ env:
 jobs:
   lint:
     name: lint and types
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,22 +68,31 @@ jobs:
             exit 1
           }
 
+  # One leg, on the declared floor. This was three — two Python versions and a
+  # macOS runner — and the cost of that was not the compute but the wall clock:
+  # a macOS job that hung for thirty minutes held every merge behind it.
+  #
+  # What each leg was for, and where that check went:
+  #
+  # * **macOS** covered the storage layer, where the two platforms genuinely
+  #   differ — directory fsync, `os.replace`, a system sqlite3 that cannot load
+  #   extensions. It also could not finish: faiss-cpu and torch each link their
+  #   own OpenMP runtime there and a process holding both aborts
+  #   (faiss-wheels#40, pytorch#149201), which is not rebasis' bug and not
+  #   rebasis' to fix. `rebasis doctor` now reports that pair, and the suite
+  #   runs on macOS locally — it is the maintainer's own platform.
+  # * **The newest Python** caught nothing the floor did not, across the runs
+  #   this repository has. `lowest direct dependencies` still pins the floor's
+  #   dependency versions, which is the check that has actually failed.
+  #
+  # Bring a leg back when there is a failure it would have caught.
   test:
-    name: tests (${{ matrix.os }}, py${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # The declared floor and the current release. SPEC 0 says
-        # the floor is 3.12 — and it is tested, not merely declared.
-        python: ["3.12", "3.13"]
-        os: [ubuntu-latest]
-        # macOS on the floor version only: the storage layer is where the
-        # differences live — directory fsync, `os.replace`, and a system
-        # sqlite3 that cannot load extensions — and one runner surfaces them.
-        include:
-          - os: macos-latest
-            python: "3.12"
+    name: tests
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    env:
+      # Named once so the steps below read the same way they did as a matrix.
+      PYTHON_VERSION: "3.12"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -90,13 +100,11 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
-          # Distinct per job, and per matrix leg here: three legs saving one
-          # key raced to reserve it and the losers logged a failed cache save.
-          cache-suffix: test-${{ matrix.os }}-py${{ matrix.python }}
+          cache-suffix: test-ubuntu-py3.12
       # --all-extras, not a bare sync: every backend test opens with
       # `pytest.importorskip`, so without the store clients installed the
       # integration step reports success having run none of them.
-      - run: uv sync --all-extras --no-group spike --python ${{ matrix.python }}
+      - run: uv sync --all-extras --no-group spike --python ${{ env.PYTHON_VERSION }}
       - name: the suite
         # One invocation, not two. Collection imports torch and every store
         # client, and that cost is paid per process — splitting the run in half
@@ -128,6 +136,7 @@ jobs:
 
   coverage:
     name: coverage floors
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -153,6 +162,7 @@ jobs:
 
   no-torch:
     name: no torch, no otel
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -186,6 +196,7 @@ jobs:
 
   lowest-direct:
     name: lowest direct dependencies
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -213,6 +224,7 @@ jobs:
 
   memory:
     name: memory ceilings
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     # Unlike the wall-clock gates, an exceeded memory ceiling **blocks**.
     # A ceiling is an absolute threshold rather than a comparison against a
@@ -233,6 +245,7 @@ jobs:
 
   docs:
     name: docs build
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -251,6 +264,7 @@ jobs:
 
   secrets:
     name: secret scan
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
