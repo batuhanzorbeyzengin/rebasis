@@ -263,9 +263,55 @@ def _build_sqlite_vec(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: in
     return f"sqlite-vec://{path}#vec_documents"
 
 
+#: Whether faiss and torch can share this process.
+#:
+#: They cannot on macOS, and the failure is not subtle: both wheels link their
+#: own OpenMP runtime, and the second one to initialise aborts the process with
+#: `OMP: Error #15`. Measured directly — faiss alone runs a reconstruct and
+#: sixty searches without complaint, and the same script with `import torch`
+#: in front of it dies before the first call.
+#:
+#: There is no fix a caller can apply (faiss-wheels#40, pytorch#149201). The
+#: workaround the error message itself offers, `KMP_DUPLICATE_LIB_OK=TRUE`,
+#: comes with the warning that it "may cause crashes or silently produce
+#: incorrect results" — and every FAISS test here asserts a *correctness*
+#: property, so running them under a flag that can quietly corrupt results
+#: would turn a red suite into a lying green one.
+#:
+#: So they are skipped, loudly, with the reason attached. `rebasis doctor`
+#: reports the same conflict to anyone who has both installed.
+def _faiss_and_torch_conflict() -> str:
+    """Why FAISS cannot be tested in this process, or "" when it can."""
+    import importlib.util
+    import sys
+
+    if sys.platform != "darwin":
+        return ""
+    if importlib.util.find_spec("torch") is None:
+        return ""
+    return (
+        "faiss-cpu and torch each link their own OpenMP runtime on macOS and "
+        "abort when both are loaded (faiss-wheels#40, pytorch#149201). This is "
+        "an upstream conflict with no caller-side fix; `KMP_DUPLICATE_LIB_OK` "
+        "trades it for silently wrong results, which these tests exist to catch"
+    )
+
+
+#: Test modules not to collect at all, rather than to collect and skip.
+#:
+#: `tests/integration/test_faiss_store.py` imports faiss at module scope, and
+#: with the conflict below that import is itself the thing that aborts the
+#: process — a skip inside a fixture comes too late to help. `collect_ignore`
+#: is the one hook that runs before the module is imported.
+collect_ignore = ["integration/test_faiss_store.py"] if _faiss_and_torch_conflict() else []
+
+
 def _build_faiss(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) -> str:
     import json
 
+    conflict = _faiss_and_torch_conflict()
+    if conflict:
+        pytest.skip(conflict)
     faiss = pytest.importorskip("faiss", reason="the faiss extra is not installed")
     index = faiss.IndexIDMap2(faiss.IndexFlatIP(dim))
     # Labels that are deliberately not row numbers: FAISS addresses an

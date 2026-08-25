@@ -147,6 +147,48 @@ def doctor_command(
 
     console.print(table)
     _print_environment()
+    _warn_about_openmp_conflict()
+
+
+def openmp_conflict() -> str:
+    """Two OpenMP runtimes in one process, or "" when there is only one.
+
+    `faiss-cpu` and `torch` each ship their own on macOS, and the second to
+    initialise aborts the process with `OMP: Error #15` — before either library
+    has done any work. Measured directly: faiss alone runs a reconstruct and
+    sixty searches without complaint, and the same script with `import torch`
+    in front of it dies before the first call.
+
+    Neither wheel can be told not to link it, and the workaround the error
+    itself suggests, `KMP_DUPLICATE_LIB_OK=TRUE`, is documented as liable to
+    "silently produce incorrect results".
+
+    Reported rather than worked around. `doctor` exists to say what this machine
+    can do, and "your FAISS index and your torch embeddings cannot be used from
+    one process" is exactly that kind of fact — better learned here than from an
+    abort halfway through a migration.
+    """
+    import importlib.util
+
+    if sys.platform != "darwin":
+        return ""
+    if importlib.util.find_spec("faiss") is None or importlib.util.find_spec("torch") is None:
+        return ""
+    return (
+        "faiss and torch are both installed, and on macOS each links its own "
+        "OpenMP runtime: loading both in one process aborts it. Use one or the "
+        "other per process — `rebasis[faiss]` without the torch extra, or a "
+        "torch-free embedding backend such as fastembed. Upstream: "
+        "faiss-wheels#40, pytorch#149201."
+    )
+
+
+def _warn_about_openmp_conflict() -> None:
+    """Say so when this environment cannot load both libraries."""
+    conflict = openmp_conflict()
+    if conflict:
+        console.print()
+        console.print(f"[yellow]incompatible pair[/yellow]  {conflict}")
 
 
 def _print_json() -> None:
@@ -194,6 +236,7 @@ def _print_json() -> None:
         "log_level": settings.level_name if settings else None,
         "telemetry": telemetry_status(),
     }
+    payload["openmp_conflict"] = openmp_conflict() or None
     console.print_json(json.dumps(payload, default=str))
 
 
