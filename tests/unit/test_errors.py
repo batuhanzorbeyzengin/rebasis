@@ -135,6 +135,23 @@ def test_render_includes_code_context_and_hint() -> None:
 
 
 @pytest.mark.unit
+def test_render_omits_the_sections_it_has_nothing_for() -> None:
+    """A bare error renders as one line, not as empty headings.
+
+    `render` is what a user sees when a command fails, and the two optional
+    sections are optional in practice: plenty of call sites raise with a message
+    and nothing else. Printing "context:" with nothing after it, or a blank
+    "hint:", reads as a bug in the tool at the exact moment the user is already
+    dealing with one.
+    """
+    rendered = EmbeddingDimensionMismatch("Collection has 384 dimensions.").render()
+
+    assert rendered == "[RB-E2004] Collection has 384 dimensions."
+    assert "context:" not in rendered
+    assert "hint:" not in rendered
+
+
+@pytest.mark.unit
 def test_cause_is_preserved() -> None:
     """Third-party exceptions are converted, not discarded.
 

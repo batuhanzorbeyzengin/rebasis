@@ -36,6 +36,14 @@ PACKAGE_FLOORS: dict[str, int] = {
     "src/rebasis/probe/": 80,
     "src/rebasis/audit/": 85,
     "src/rebasis/storage/": 80,
+    # Both of these decide what a *query* returns. `serve` holds the two
+    # arrangements a user can put in front of a live index; `migrate/spaces.py`
+    # decides whether the index is in one embedding space or two, and the whole
+    # protection against a mixed index is that somebody is told. A branch nobody
+    # exercises there is a branch that answers a query wrongly and silently,
+    # which is the same class of failure the audit chain's floor exists for.
+    "src/rebasis/serve/": 85,
+    "src/rebasis/migrate/": 80,
 }
 
 REPORT = Path("reports/coverage.json")
