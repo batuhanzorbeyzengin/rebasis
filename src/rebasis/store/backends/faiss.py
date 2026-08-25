@@ -37,7 +37,6 @@ after the first replacement would name the wrong vector, silently.
 
 from __future__ import annotations
 
-import contextlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -251,22 +250,7 @@ class FaissStore:
         # `search` reports labels, not rows: on an id-mapped index the two are
         # different numbers and indexing the sidecar by a label is either an
         # error or, worse, the wrong document.
-        #
-        # Pinned to one thread, and it costs nothing: FAISS parallelises across
-        # the *rows* of a query batch, and this backend searches one vector at a
-        # time, so the thread pool it would spin up has one item of work.
-        #
-        # What it buys is not a speed-up but the absence of a deadlock. A
-        # process holding both faiss-cpu and torch on macOS holds two OpenMP
-        # runtimes — a known conflict with no fix available to a caller
-        # (faiss-wheels#40, pytorch#149201) — and this suite hung there
-        # reproducibly, main thread inside `swigfaiss.search` beside an OpenMP
-        # worker with no Python frame. The documented workaround,
-        # `KMP_DUPLICATE_LIB_OK=TRUE`, is described by its own authors as liable
-        # to "silently produce incorrect results", which is the one outcome this
-        # project will not trade for a green run.
-        with _single_threaded():
-            scores, labels = self._index.search(query, k)
+        scores, labels = self._index.search(query, k)
         return [
             Hit(id=self._ids[self._row_of_label[int(label)]], score=float(score), rank=rank)
             for rank, (label, score) in enumerate(zip(labels[0], scores[0], strict=True))
@@ -335,24 +319,6 @@ class FaissStore:
         from rebasis.store.base import require_capability
 
         require_capability(self, "can_rebuild_index", operation="rebuilding the index")
-
-
-@contextlib.contextmanager
-def _single_threaded() -> Iterator[None]:
-    """Run a block with OpenMP pinned to one thread, if that can be arranged.
-
-    `threadpoolctl` is a hard dependency, so the import is expected to succeed —
-    but a BLAS or OpenMP build it cannot introspect is a normal thing to meet
-    (Apple's Accelerate is the usual one), and a diagnostic that raised there
-    would be worse than one that does nothing.
-    """
-    try:
-        from threadpoolctl import threadpool_limits
-    except ImportError:  # pragma: no cover - threadpoolctl is a hard dependency
-        yield
-        return
-    with threadpool_limits(limits=1, user_api="openmp"):
-        yield
 
 
 def _sidecar_path(path: Path) -> Path:
