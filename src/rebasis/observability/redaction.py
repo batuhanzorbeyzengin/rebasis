@@ -115,6 +115,13 @@ ALLOWED_FIELDS: frozenset[str] = frozenset(
         "decision",
         "borderline",
         "upgrade_gain",
+        # A property of the index structure, not of the corpus: how much of the
+        # exact answer the store's own search returns.
+        "ann_recall",
+        # Aggregate geometry of the two spaces: a root-mean-square over pairwise
+        # similarities and the bound it implies. Carries no document.
+        "geometry_delta",
+        "alignment_bound",
         # errors
         "error_code",
         "transient",

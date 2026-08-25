@@ -92,8 +92,40 @@ class DecisionResult:
     #: to warn when the two metrics disagree — never to override the decision,
     #: which the bands were calibrated against on recall.
     ndcg_advantage: float | None = None
+    #: Retention when the bridge feeds a rerank instead of producing the final
+    #: ranking. Reported, never decisive: it describes an arrangement the tool
+    #: measures and does not yet serve.
+    cascade_arr: float | None = None
     warnings: list[str] = field(default_factory=list)
     rationale: str = ""
+
+    @property
+    def cascade_advantage(self) -> float | None:
+        """The break-even for a **two-stage** arrangement.
+
+        The same product as :attr:`bridge_advantage`, with retention measured at
+        candidate-set depth instead of at ``k``. That is the right retention for
+        an arrangement where the bridge produces candidates and the new model
+        ranks them in its own space: what can be lost is a relevant document
+        that never reached the candidate set, and nothing after that.
+
+        Systematically higher than ``bridge_advantage``, and measured to be
+        higher in a way that changes the answer — 1 of 48 runs against 36 of 48
+        (`docs/cascade-band.md`).
+
+        Reported and **not** acted on, which is a narrower statement than it was.
+        :class:`~rebasis.serve.cascade.Cascade` serves this arrangement, so the
+        objection is no longer that the tool cannot do it. It is that the
+        decision rule weighs quality against cost, and this arrangement's cost
+        depends on a **query distribution** — how often a candidate is already
+        cached — which is a property of a running system and not of the corpus a
+        probe can see. ``bridge_advantage`` costs a matrix multiply whatever the
+        traffic. So the rule runs on the number it can price, and this one is
+        reported for a reader who can price the other.
+        """
+        if self.upgrade_gain is None or self.cascade_arr is None:
+            return None
+        return self.cascade_arr * self.upgrade_gain
 
     @property
     def bridge_advantage(self) -> float | None:
@@ -137,6 +169,10 @@ class DecisionResult:
             "old_model_arr": round(self.old_model_arr, 4) if self.old_model_arr else None,
             "bridge_advantage": (
                 round(self.bridge_advantage, 4) if self.bridge_advantage is not None else None
+            ),
+            "cascade_arr": round(self.cascade_arr, 4) if self.cascade_arr is not None else None,
+            "cascade_advantage": (
+                round(self.cascade_advantage, 4) if self.cascade_advantage is not None else None
             ),
             "score_shift": round(self.score_shift, 4) if self.score_shift else None,
             "warnings": list(self.warnings),
@@ -217,6 +253,7 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
     tier: str = "t1",
     estimate_uninformative: bool = False,
     ndcg_advantage: float | None = None,
+    cascade_arr: float | None = None,
 ) -> DecisionResult:
     """Turn measurements into a recommendation.
 
@@ -245,6 +282,11 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
             decision runs on recall, which cannot see an adapter that returns
             the same documents in a worse order; when the two disagree the
             report says so rather than picking one silently.
+        cascade_arr: Retention at candidate-set depth — what the bridge would
+            retain if it fed a rerank instead of producing the final ranking.
+            Carried onto the result and reported; it decides nothing, because
+            what that arrangement costs depends on a query distribution rather
+            than on this corpus. See :attr:`DecisionResult.cascade_advantage`.
     """
     warnings: list[str] = []
     bridging_loss = None if old_model_arr is None else old_model_arr - arr_at_k
@@ -277,6 +319,7 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
         settled.provisional = provisional
         settled.tier = tier
         settled.estimate_uninformative = estimate_uninformative
+        settled.cascade_arr = cascade_arr
         settled.warnings = warnings + settled.warnings
         if provisional:
             settled.rationale = _PROVISIONAL_PREFIX + settled.rationale
@@ -360,6 +403,7 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
         tier=tier,
         estimate_uninformative=estimate_uninformative,
         ndcg_advantage=ndcg_advantage,
+        cascade_arr=cascade_arr,
         warnings=warnings,
         rationale=(
             _PROVISIONAL_PREFIX + _RATIONALE[decision] if provisional else _RATIONALE[decision]

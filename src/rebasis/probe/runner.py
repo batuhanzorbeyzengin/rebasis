@@ -19,7 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np  # noqa: TC002 - runtime annotation on a slotted dataclass
 
-from rebasis.core import ScoreCalibrator, csls_bias, fit_candidates, l2_normalize, select_best
+from rebasis.core import (
+    ScoreCalibrator,
+    csls_bias,
+    fit_candidates,
+    geometry_bound,
+    l2_normalize,
+    select_best,
+)
 from rebasis.observability import Events, Spans, get_logger, instrument, span
 from rebasis.probe.decision import DecisionResult, decide
 from rebasis.probe.groundtruth import (
@@ -42,6 +49,7 @@ from rebasis.probe.metrics import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from rebasis.core.geometry import GeometryBound
     from rebasis.core.selection import AdapterCandidate
     from rebasis.types import FloatArray
 
@@ -56,6 +64,21 @@ CALIBRATION_FRACTION = 1 / 3
 #: Below this there is nothing to calibrate against, and a calibrator fitted on
 #: one or two points would be noise dressed up as a correction.
 _MIN_CALIBRATION_POINTS = 2
+
+#: Candidate-set size at which the two-stage arrangement is reported.
+#:
+#: A bridge does not have to produce the final ranking. It can produce a
+#: *candidate set* which the new model then reorders in its own space, and the
+#: only thing that arrangement can lose is a relevant document that never
+#: reached the top N. So it is bounded by recall@N rather than by nDCG@10 —
+#: measured across 24 runs, retention 0.697 at nDCG@10 against 0.889 at
+#: recall@200, and bridging beat doing nothing in 0 of 24 against 16 of 24
+#: (`docs/cascade-band.md`).
+#:
+#: 100 rather than 200 because it is the smaller claim: the measured advantage
+#: at 100 and at 200 differed by a few points, and 100 is half the documents to
+#: re-embed on the hot path.
+CASCADE_N = 100
 
 
 @dataclass(slots=True)
@@ -77,6 +100,11 @@ class CandidateMetrics:
     #: Recall in the sparsest clusters. ``None`` when the sample was not
     #: clustered, or held too few clusters for a tail to mean anything.
     tail_arr: float | None = None
+    #: Retention when the bridge is used as a **recall stage** rather than as
+    #: the final ranking: recall@``CASCADE_N`` against what a full reindex
+    #: retrieves at the same depth. This is what bounds a two-stage
+    #: arrangement, and it is systematically higher than ``arr``.
+    cascade_arr: float | None = None
     used_csls: bool = False
     n_params: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
@@ -99,6 +127,7 @@ class CandidateMetrics:
                 else None
             ),
             "tail_arr": None if self.tail_arr is None else round(self.tail_arr, 4),
+            "cascade_arr": None if self.cascade_arr is None else round(self.cascade_arr, 4),
             "used_csls": self.used_csls,
             "n_params": self.n_params,
         }
@@ -127,6 +156,10 @@ class ProbeResult:
     #: What a full reindex would cost, extrapolated from this run's own
     #: measured embedding rate.
     reindex_cost: dict[str, Any] = field(default_factory=dict)
+    #: How much of the old space's geometry survives in the new one, and the
+    #: alignment error that bounds. Computed before any adapter is fitted, from
+    #: one Gram-matrix difference — see `rebasis.core.geometry`.
+    geometry: GeometryBound | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialisable form, for the report and the audit record."""
@@ -144,6 +177,7 @@ class ProbeResult:
             "duration_seconds": round(self.duration_seconds, 2),
             "resources": self.resources,
             "cost_full_reindex": self.reindex_cost,
+            "geometry": None if self.geometry is None else self.geometry.to_dict(),
         }
 
 
@@ -156,30 +190,44 @@ def evaluate_candidate(  # noqa: PLR0913 - one argument per measurement input
     k: int,
     csls_sample: FloatArray | None = None,
     query_clusters: np.ndarray | None = None,
+    cascade_k: int | None = None,
+    oracle_recall_at_cascade: float | None = None,
 ) -> CandidateMetrics:
     """Measure one candidate, with and without CSLS.
 
     CSLS is evaluated as a **variant** rather than applied unconditionally. M0
     measured it adding +0.103 on weak adapters and costing −0.045 on strong ones,
     so applying it always would degrade exactly the adapters that are working.
+
+    ``cascade_k`` asks for one extra number from the same search: recall at a
+    candidate-set depth, which is what bounds the bridge when it feeds a rerank
+    rather than producing the final ranking. The search is widened to reach it;
+    every metric that decides anything is still computed at ``k``, on the same
+    rows it would have seen, so widening cannot move a decision.
     """
     mapped = l2_normalize(candidate.adapter.apply(query_vectors_new), copy=False)
+    search_k = max(k, cascade_k or k)
 
-    indices, scores = top_k_search(mapped, old_doc_vectors, k=k, self_mask=ground_truth.self_mask)
-    plain_arr = _arr(indices, ground_truth, k)
+    indices, scores = top_k_search(
+        mapped, old_doc_vectors, k=search_k, self_mask=ground_truth.self_mask
+    )
+    plain_arr = _arr(indices[:, :k], ground_truth, k)
 
     used_csls = False
     best_indices, best_scores, best_arr = indices, scores, plain_arr
     if csls_sample is not None:
         bias = csls_bias(old_doc_vectors, csls_sample)
         csls_indices, csls_scores = top_k_search(
-            mapped, old_doc_vectors, k=k, self_mask=ground_truth.self_mask, doc_bias=bias
+            mapped, old_doc_vectors, k=search_k, self_mask=ground_truth.self_mask, doc_bias=bias
         )
-        csls_arr = _arr(csls_indices, ground_truth, k)
+        csls_arr = _arr(csls_indices[:, :k], ground_truth, k)
         if csls_arr > plain_arr:
             used_csls = True
             best_indices, best_scores, best_arr = csls_indices, csls_scores, csls_arr
 
+    cascade_arr = _cascade_arr(best_indices, ground_truth, cascade_k, oracle_recall_at_cascade)
+    best_indices = best_indices[:, :k]
+    best_scores = best_scores[:, :k]
     per_query = recall_per_query(best_indices, ground_truth.relevant_sparse, k)
     return CandidateMetrics(
         name=_display_name(candidate, used_csls=used_csls),
@@ -192,6 +240,7 @@ def evaluate_candidate(  # noqa: PLR0913 - one argument per measurement input
         spearman=spearman_topk(ground_truth.oracle_indices, best_indices, k),
         score_shift_raw=score_shift_ks(best_scores, ground_truth.oracle_scores),
         tail_arr=_tail(per_query, query_clusters, ground_truth),
+        cascade_arr=cascade_arr,
         used_csls=used_csls,
         n_params=candidate.adapter.n_params(),
         extras={"arr_without_csls": plain_arr},
@@ -218,6 +267,25 @@ def _display_name(candidate: AdapterCandidate, *, used_csls: bool) -> str:
     """
     base = f"{candidate.adapter.type_name}+csls" if used_csls else candidate.adapter.type_name
     return base if candidate.fit_kind == "document" else f"{base}@query"
+
+
+def _cascade_arr(
+    indices: np.ndarray,
+    ground_truth: GroundTruth,
+    cascade_k: int | None,
+    oracle_recall: float | None,
+) -> float | None:
+    """Retention when the bridge produces a candidate set rather than a ranking.
+
+    On the same scale as ARR — divided by what a full reindex retrieves at the
+    same depth — so the two can be read side by side. ``None`` when the depth
+    was not asked for, or when the oracle retrieved nothing at it and the ratio
+    would be a division by zero dressed as a measurement.
+    """
+    if cascade_k is None or not oracle_recall:
+        return None
+    recall = recall_at_k(indices[:, :cascade_k], ground_truth.relevant_sparse, cascade_k)
+    return recall / oracle_recall
 
 
 def _tail(
@@ -286,6 +354,7 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
     query_clusters: np.ndarray | None = None,
     resources: dict[str, Any] | None = None,
     reindex_cost: dict[str, Any] | None = None,
+    cascade_k: int | None = CASCADE_N,
 ) -> ProbeResult:
     """Run the full probe pipeline and return a decision.
 
@@ -312,6 +381,10 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
             why this is measured rather than assumed either way.
         query_clusters: Cluster of each query, when the sample was stratified.
             Enables ``tail_arr`` — the heterogeneous-drift signal.
+        cascade_k: Candidate-set depth at which to report the two-stage
+            arrangement, or ``None`` to skip it. Widens the search and adds one
+            metric; every metric a decision is taken on is still computed at
+            ``k``.
         resources: What the run cost so far, for the summary.
         reindex_cost: Estimated cost of a full reindex.
     """
@@ -320,6 +393,18 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
         Events.PROBE_RUN_STARTED,
         count=int(old_doc_vectors.shape[0]),
         dim=int(old_doc_vectors.shape[1]),
+    )
+
+    # Before the fit, because that is the whole point of it: one Gram-matrix
+    # difference says what any orthogonal alignment can achieve, in the seconds
+    # before the candidate search finds out what one actually achieves.
+    geometry = geometry_bound(new_doc_vectors[fit_indices], old_doc_vectors[fit_indices], seed=seed)
+    log.info(
+        Events.PROBE_GEOMETRY_MEASURED,
+        count=geometry.n_pairs,
+        dim=geometry.dim,
+        geometry_delta=round(geometry.delta, 4),
+        alignment_bound=round(geometry.bound, 4),
     )
 
     kwargs: dict[str, Any] = {"methods": methods} if methods else {}
@@ -359,6 +444,17 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
             candidates[0].adapter.apply(new_doc_vectors[fit_indices[:sample_size]]), copy=False
         )
 
+    # What a full reindex retrieves at candidate-set depth. The denominator for
+    # `cascade_arr`, computed once rather than per candidate — and only when the
+    # depth is actually wider than `k`, since otherwise it is `oracle_recall`.
+    oracle_recall_at_cascade = _oracle_recall_at(
+        cascade_k,
+        k=k,
+        new_query_vectors=new_query_vectors,
+        new_doc_vectors=new_doc_vectors,
+        ground_truth=ground_truth,
+    )
+
     with span(Spans.ADAPTER_EVALUATE, {"count": len(candidates)}):
         measured = [
             evaluate_candidate(
@@ -369,6 +465,8 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
                 k=k,
                 csls_sample=csls_sample,
                 query_clusters=query_clusters,
+                cascade_k=cascade_k,
+                oracle_recall_at_cascade=oracle_recall_at_cascade,
             )
             for c in candidates
         ]
@@ -410,6 +508,9 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
             # A synthesised task the retriever solves every time cannot tell two
             # models apart, so the upgrade estimate built on it is not one.
             estimate_uninformative=bool(ground_truth.metadata.get("task_too_easy")),
+            # What the same adapter would retain feeding a rerank. Reported and
+            # not acted on — see `DecisionResult.cascade_advantage`.
+            cascade_arr=best_metrics.cascade_arr,
         )
         _annotate(decision_span, decision, best_metrics)
 
@@ -444,6 +545,7 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
         adapter=winner.adapter,
         resources=resources or {},
         reindex_cost=reindex_cost or {},
+        geometry=geometry,
     )
 
 
@@ -467,6 +569,32 @@ def _annotate(active: Any, decision: DecisionResult, best: CandidateMetrics) -> 
     gauge = instrument("rebasis.probe.arr")
     gauge.set(best.arr, {"metric": "r10", "adapter_type": best.name})
     gauge.set(best.mrr, {"metric": "mrr", "adapter_type": best.name})
+
+
+def _oracle_recall_at(
+    cascade_k: int | None,
+    *,
+    k: int,
+    new_query_vectors: FloatArray,
+    new_doc_vectors: FloatArray,
+    ground_truth: GroundTruth,
+) -> float | None:
+    """What a full reindex retrieves at candidate-set depth.
+
+    The denominator that puts ``cascade_arr`` on ARR's scale. Recomputed against
+    the new model's own index rather than reused from the ground truth, because
+    the ground truth was built at ``k`` and this is a wider question.
+
+    Returns ``None`` when the depth adds nothing — ``cascade_k`` at or below
+    ``k`` is the number ARR already reports, and computing it twice under two
+    names would invite a reader to compare a quantity with itself.
+    """
+    if cascade_k is None or cascade_k <= k:
+        return None
+    indices, _ = top_k_search(
+        new_query_vectors, new_doc_vectors, k=cascade_k, self_mask=ground_truth.self_mask
+    )
+    return recall_at_k(indices, ground_truth.relevant_sparse, cascade_k)
 
 
 def _baselines(

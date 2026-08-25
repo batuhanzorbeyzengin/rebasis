@@ -48,6 +48,7 @@ class Events(StrEnum):
     PROBE_GROUNDTRUTH_COMPUTED = "probe.groundtruth.computed"
     PROBE_METRICS_COMPUTED = "probe.metrics.computed"
     PROBE_DECISION_MADE = "probe.decision.made"
+    PROBE_GEOMETRY_MEASURED = "probe.geometry.measured"
     PROBE_RUN_COMPLETED = "probe.run.completed"
 
     # fit
@@ -80,6 +81,8 @@ class Events(StrEnum):
     MIGRATE_JOB_PAUSED = "migrate.job.paused"
     MIGRATE_JOB_RESUMED = "migrate.job.resumed"
     MIGRATE_JOB_COMPLETED = "migrate.job.completed"
+    MIGRATE_INDEX_MIXED = "migrate.index.mixed"
+    MIGRATE_INDEX_MEASURED = "migrate.index.measured"
     MIGRATE_DURABILITY_VERIFIED = "migrate.durability.verified"
     MIGRATE_ADAPTER_REFITTED = "migrate.adapter.refitted"
 
@@ -174,6 +177,15 @@ EVENT_CATALOG: dict[Events, EventSpec] = {
         ("arr_r10", "arr_mrr", "naive_overlap", "score_shift", "tail_arr"),
         audited=False,
         description="Retrieval metrics computed.",
+    ),
+    Events.PROBE_GEOMETRY_MEASURED: EventSpec(
+        _I,
+        ("count", "dim", "geometry_delta", "alignment_bound"),
+        audited=False,
+        description="How closely the two models' pairwise similarities agree, and the "
+        "bound on orthogonal alignment error that implies (Maystre et al., "
+        "arXiv:2510.13406). Computed before any adapter is fitted. A bound, not a "
+        "prediction: it says an alignment exists, not that retrieval will use it.",
     ),
     Events.PROBE_DECISION_MADE: EventSpec(
         _I,
@@ -298,6 +310,23 @@ EVENT_CATALOG: dict[Events, EventSpec] = {
     ),
     Events.MIGRATE_JOB_COMPLETED: EventSpec(
         _I, ("job_id", "count", "duration_ms"), audited=True, description="Migration completed."
+    ),
+    Events.MIGRATE_INDEX_MIXED: EventSpec(
+        _W,
+        ("job_id", "count", "state", "store_backend"),
+        audited=False,
+        description="The job stopped with records left, so the index now holds vectors "
+        "from two embedding spaces and no single query is correct against all of it. "
+        "`count` is how many records still carry the old model's geometry.",
+    ),
+    Events.MIGRATE_INDEX_MEASURED: EventSpec(
+        _I,
+        ("store_backend", "count", "ann_recall", "duration_ms"),
+        audited=False,
+        description="How much of the exact answer the store's own search returns, "
+        "measured against streamed exact kNN over the same collection. Emitted "
+        "either side of a migration: rewriting a vector does not rewrite the graph "
+        "that was built around it.",
     ),
     Events.MIGRATE_DURABILITY_VERIFIED: EventSpec(
         _I,
