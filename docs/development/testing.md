@@ -94,31 +94,50 @@ it, say so in the pull request and it will be measured on the host.
 
 ## What CI runs, and what it no longer does
 
-One test leg: Ubuntu on the declared floor, 3.12. It was three — two Python
-versions and a macOS runner — and collapsing it was a decision about wall clock
-rather than compute. A hung macOS job held every merge behind it for half an
-hour at a time.
+Six jobs, one of which runs the suite. It was ten.
 
-**macOS is not in CI, and the suite still runs there.** It is the maintainer's
-own platform, which is where the storage-layer differences that leg existed for
-— directory fsync, `os.replace`, a system sqlite3 that cannot load extensions —
-actually get exercised. The leg also could not finish: `faiss-cpu` and `torch`
-each link their own OpenMP runtime on macOS and a process holding both aborts
-with `OMP: Error #15` before either library does any work
-([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
-[pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). That is not
-rebasis' bug and there is no fix a caller can apply; the documented workaround
-is itself documented as liable to produce wrong results. `rebasis doctor` reports
-the pair, and the FAISS tests skip themselves under it with the reason attached.
+| job | what it is for |
+|---|---|
+| lint and types | ruff, mypy, import-linter, interrogate, generated catalogues |
+| tests and coverage floors | the suite, plus the per-module floors |
+| no torch, no otel | the core install works without the optional halves |
+| lowest direct dependencies | the declared floors resolve and pass |
+| docs build | `mkdocs --strict`; a dead link is a failure |
+| secret scan | gitleaks |
 
-**The newest Python is not tested separately**, because across this
-repository's runs it caught nothing the floor did not. `lowest direct
-dependencies` still pins the floor's dependency versions, and that is the check
-that has actually failed.
+What went, and why:
 
-Every job carries a `timeout-minutes`. A job that hangs should cost minutes, not
-the six hours a runner will otherwise give it — and `faulthandler_timeout` in
-`pyproject.toml` means a hang names the test it happened in rather than the
-percentage it stopped at.
+**A second job running the same tests.** `tests` and `coverage` differed only in
+their marker expression, so the suite ran twice for fourteen minutes of runner
+time and two chances to go red. The wider selection stayed.
 
-Bring a leg back when there is a failure it would have caught.
+**The perf layer.** It asserts timing, and a shared runner cannot measure
+timing: `test_batching_amortises_the_per_call_cost` failed twice by 1% and 2.6%,
+which is noise wearing a red X. [ADR
+11](../adr/0011-the-hot-path-budget-is-per-dimension.md) already says absolute
+numbers belong on a fixed runner, and so do these ratios. The layer runs on the
+project's own host, which is the machine its numbers describe.
+
+**macOS.** It covered the storage layer, where the platforms genuinely differ —
+directory fsync, `os.replace`, a system sqlite3 that cannot load extensions. It
+also could not finish: `faiss-cpu` and `torch` each link their own OpenMP
+runtime there and a process holding both aborts before either library does any
+work ([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
+[pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). Not
+rebasis' bug, no caller-side fix, and the documented workaround is documented as
+liable to produce wrong results. macOS is the maintainer's own platform and the
+suite runs there; `rebasis doctor` reports the conflicting pair to a user.
+
+**The newest Python.** Across this repository's runs it caught nothing the floor
+did not, and `lowest direct dependencies` still pins the floor's dependency
+versions — the check that has actually failed.
+
+Every job carries a `timeout-minutes`, so a hang costs minutes rather than the
+six hours a runner will otherwise give it, and `faulthandler_timeout` in
+`pyproject.toml` makes a hang name the test rather than the percentage it
+stopped at.
+
+**None of this is a claim that the removed checks were worthless.** They are
+removed because a suite nobody can get through is a suite nobody runs. Bring one
+back when there is a failure it would have caught — which is also the standard
+for adding a new one.
