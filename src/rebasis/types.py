@@ -154,6 +154,16 @@ class StoreCapabilities:
     can_filter: bool
     dimension_locked: bool
     supports_in_place_update: bool
+    #: Whether the backend can rebuild its own search structure from the
+    #: vectors currently in it.
+    #:
+    #: Defaults to ``False``, which is both the safe answer for a third-party
+    #: backend and the true one for most: an exact backend has no structure to
+    #: rebuild, and a backend with a graph does not necessarily expose a way to
+    #: rebuild it. Measured — see `docs/index-health.md` — a migration can cost
+    #: real recall in the index while every vector in it is correct, and this is
+    #: the capability that decides whether that is recoverable.
+    can_rebuild_index: bool = False
     name: str = ""
 
 

@@ -69,6 +69,27 @@ class VectorStore(Protocol):
         """
         ...
 
+    def rebuild_index(self) -> None:
+        """Rebuild the search structure from the vectors that are in it now.
+
+        Separate from writing, because they fail separately. A graph index picks
+        a record's edges from the geometry of its neighbours at insert time, and
+        an in-place vector update leaves those edges describing a neighbourhood
+        that no longer exists: every vector correct, every count right, and
+        recall down. Measured at up to 12 points on a 100,000-record Chroma
+        collection — `docs/index-health.md`.
+
+        Only meaningful where ``can_rebuild_index`` is declared. A backend that
+        searches exhaustively has no structure to rebuild and says so; a backend
+        with a graph but no way to rebuild it says so too, which is the more
+        important of the two — it means the loss is not recoverable through
+        rebasis and the collection has to be rebuilt by its owner.
+
+        Raises:
+            CapabilityMissing: When the backend cannot.
+        """
+        ...
+
 
 def require_capability(store: VectorStore, name: str, *, operation: str) -> None:
     """Assert a capability before starting work.

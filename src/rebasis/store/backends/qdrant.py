@@ -114,7 +114,7 @@ class QdrantStore:
 
     @property
     def capabilities(self) -> StoreCapabilities:
-        """Qdrant supports everything rebasis needs."""
+        """Qdrant supports everything rebasis needs, including a reindex."""
         return StoreCapabilities(
             can_read_vectors=True,
             can_read_text=self._text_key is not None,
@@ -122,6 +122,9 @@ class QdrantStore:
             can_filter=True,
             dimension_locked=True,
             supports_in_place_update=True,
+            # The only backend of the five that can. Qdrant documents the move
+            # and documents that it costs no downtime.
+            can_rebuild_index=True,
             name="qdrant",
         )
 
@@ -254,6 +257,53 @@ class QdrantStore:
                 f"Qdrant rejected an update of {len(ids)} points.",
                 hint="Transient failures are retried automatically; this one was not.",
                 context={"store_backend": "qdrant", "count": len(ids)},
+                cause=exc,
+            ) from exc
+
+    def rebuild_index(self) -> None:
+        """Make Qdrant rebuild the HNSW graph from the vectors now in it.
+
+        The documented move, and Qdrant's own words for it: *"Changing `m` or
+        `ef_construct` automatically triggers a full background HNSW rebuild"*,
+        and *"queries continue to be served by the old index until the new index
+        is complete, so there is no downtime"*
+        (`qdrant.tech/documentation/faq/qdrant-fundamentals/`). That property is
+        what makes this worth exposing at all — a repair that took the
+        collection offline would not be one a user could take on trust.
+
+        `ef_construct` is bumped by one and **left there**, which is the shape
+        Qdrant's own guidance describes; reverting it immediately is advised
+        against, and would in any case queue a second full rebuild to undo a
+        change of no consequence. One point of `ef_construct` is inside the
+        noise of the parameter's effect, and the alternative is a repair that
+        does not happen.
+
+        Returns as soon as the rebuild is *scheduled*. Qdrant does the work in
+        the background and keeps answering queries throughout, so blocking here
+        would hold a lock over an operation the database is explicitly designed
+        to run without one. `rebasis migrate`'s own health check re-measures
+        after the fact.
+
+        Raises:
+            StoreError: When Qdrant rejects the configuration change.
+        """
+        from qdrant_client import models
+
+        try:
+            current = self._client.get_collection(self._collection).config.hnsw_config
+            ef_construct = int(getattr(current, "ef_construct", None) or 100)
+            self._client.update_collection(
+                collection_name=self._collection,
+                hnsw_config=models.HnswConfigDiff(ef_construct=ef_construct + 1),
+            )
+        except Exception as exc:
+            raise StoreError(
+                "Qdrant refused to reconfigure the collection's HNSW index.",
+                hint=(
+                    "Rebuilding is triggered by changing `ef_construct`, which "
+                    "needs permission to update the collection."
+                ),
+                context={"store_backend": "qdrant"},
                 cause=exc,
             ) from exc
 

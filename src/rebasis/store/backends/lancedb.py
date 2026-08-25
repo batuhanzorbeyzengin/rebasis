@@ -242,6 +242,19 @@ class LanceDBStore:
                 cause=exc,
             ) from exc
 
+    def rebuild_index(self) -> None:
+        """Not declared, because rebasis cannot tell what it would be rebuilding.
+
+        LanceDB OSS builds vector indexes only when asked, and searches
+        unindexed rows by brute force. `create_index` would therefore either
+        rebuild an index the table has or *create* one it never had — and
+        creating an index on somebody's table is a change to their data, not a
+        repair of ours.
+        """
+        from rebasis.store.base import require_capability
+
+        require_capability(self, "can_rebuild_index", operation="rebuilding the index")
+
 
 def _pick(columns: list[str], candidates: tuple[str, ...], kind: str, uri: StoreURI) -> str:
     """Find a column by convention, or say clearly which names were tried."""

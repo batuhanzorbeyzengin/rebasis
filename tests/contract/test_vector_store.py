@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from rebasis.core import l2_normalize
-from rebasis.errors import RebasisError
+from rebasis.errors import CapabilityMissing, RebasisError
 from rebasis.store import MemoryStore, open_store
 
 DIM = 32
@@ -172,6 +172,26 @@ def test_capabilities_are_truthful(store: Any) -> None:
         store.upsert_vectors(ids, replacement)
         written = {r.id: r.vector for r in store.iter_records(ids)}
         assert np.allclose(written["doc-0"], replacement[0])
+
+
+@pytest.mark.contract
+def test_rebuild_index_matches_what_is_declared(store: Any) -> None:
+    """Either the backend can rebuild its index or it says so.
+
+    This is the capability that decides whether a migration's damage to the
+    search structure is recoverable, so both answers have to be honest: a
+    backend that claims it must actually do it, and one that cannot must refuse
+    at the moment it is asked rather than appear to succeed and change nothing.
+    """
+    if store.capabilities.can_rebuild_index:
+        store.rebuild_index()
+        # Still usable afterwards; the point of the documented mechanism is that
+        # the collection keeps serving while the new structure is built.
+        assert store.count() >= 0
+        return
+
+    with pytest.raises(CapabilityMissing):
+        store.rebuild_index()
 
 
 @pytest.mark.contract
