@@ -109,6 +109,13 @@ jobs:
         # extras: every backend test opens with `pytest.importorskip`, and a
         # suite that skipped seventy tests at collection reports the same green
         # summary line as one that ran them.
+        #
+        # Not parallelised, and measured rather than assumed: `-n auto --dist
+        # loadfile` on the eight-core host took 3m41s against 3m53s serial — a
+        # 5% saving, because the suite is already fast enough that xdist's
+        # per-worker collection dominates. It also broke two tests that depend
+        # on the console width. `pytest-xdist` stays a dependency for a
+        # developer who wants it locally.
         run: |
           set -o pipefail
           uv run pytest -m "unit or property or contract or integration or e2e" \

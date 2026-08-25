@@ -454,6 +454,12 @@ testpaths = ["tests"]
 # The default run executes only the fast layer. A developer loop longer than
 # ten seconds means the tests stop being run — that is a deliberate decision.
 addopts = "-m 'not gpu and not slow and not network and not perf' --strict-markers --strict-config"
+# Dump every thread's traceback when a single test runs this long. Nothing here
+# takes two minutes, so it never fires on a healthy run — and when a suite hangs
+# instead of failing, the difference between "CI is stuck" and "this test, in
+# this library, waiting on this call" is the whole diagnosis. macOS has hung and
+# aborted on this suite with no indication of where.
+faulthandler_timeout = 120
 markers = [
     "unit: fast, isolated, no I/O (< 10 s total)",
     "property: hypothesis-driven (< 60 s)",
