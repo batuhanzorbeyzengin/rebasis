@@ -1,4 +1,4 @@
-"""rebasis — change the embedding model of your local RAG without deleting the index."""
+"""rebasis — measure whether an embedding upgrade is worth it, bridge it, migrate it."""
 
 from __future__ import annotations
 

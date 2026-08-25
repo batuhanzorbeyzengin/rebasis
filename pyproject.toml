@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 [project]
 name = "rebasis"
 dynamic = ["version"]
-description = "Change the embedding model of your local RAG without deleting the index"
+description = "Measure whether an embedding upgrade is worth it, bridge it without reindexing when it is, and migrate safely when you are ready"
 readme = "README.md"
 license = "Apache-2.0"
 # SPEC 0: a Python release is dropped three years after its

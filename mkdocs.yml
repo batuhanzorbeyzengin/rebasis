@@ -12,7 +12,7 @@
 
 site_name: rebasis
 site_description: >-
-  Change the embedding model of your local RAG without deleting the index.
+  Measure whether an embedding upgrade is worth it, bridge it without reindexing when it is, and migrate safely when you are ready.
 site_url: https://batuhanzorbeyzengin.github.io/rebasis/
 repo_url: https://github.com/batuhanzorbeyzengin/rebasis
 repo_name: batuhanzorbeyzengin/rebasis
@@ -121,6 +121,8 @@ nav:
       - M4 — memory and budgets: m4-findings.md
       - Golden corpora — the first real evidence: golden-findings.md
       - When bridging is worth it: bridge-band.md
+      - The bridge as a recall stage: cascade-band.md
+      - What a migration does to the index: index-health.md
   - Development:
       - Setup: development/setup.md
       - Testing: development/testing.md

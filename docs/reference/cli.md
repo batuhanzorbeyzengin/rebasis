@@ -171,6 +171,8 @@ rebasis is not part of, and try `--limit` on a slice first. See
 | `--keep-original/--no-keep-original` | keep | Shadow copy for rollback |
 | `--power-aware/--no-power-aware` | on | Pause on low battery |
 | `--resume` | — | Continue an existing job id. Recovers `--adapter` and `--store` from the job |
+| `--health-check/--no-health-check` | on | Measure what the index's own search returns against exact kNN, before and after |
+| `--rebuild-index` | off | When the run finishes, ask the store to rebuild its search structure |
 | `--dry-run`, `-n` | off | Print the plan and stop |
 | `--state-dir` | `./.rebasis` | Where the job state, shadow copies and audit trail live |
 | `--yes`, `-y` | | Skip the confirmation |
@@ -191,10 +193,30 @@ the shadow copy is what makes the job reversible.
 would you delete?" is a read, and making it wait behind a running migration would
 be a worse answer than showing it.
 
+**Two things `migrate` reports that nothing else can see.**
+
+`--health-check` measures whether the index can still *find* what was written to
+it, which is a different question from whether the write landed. A graph index
+picks each record's edges from the geometry of its neighbours at insert time, and
+rewriting the vector does not rewrite the graph — so recall can fall while every
+vector in the collection is correct and verified. It costs two scans of the
+collection (18–21 seconds per 100,000 records) and reports the number without
+attaching a threshold to it. `--rebuild-index` asks the store to rebuild
+afterwards, where the backend supports that; it is off by default because
+rebuilding changes the collection's own configuration, which is the user's index
+rather than rebasis'. [The measurement](../index-health.md).
+
+A run that stops short — `--limit`, a pause, a failed batch — leaves the
+collection holding **both models' vectors**, and no query is correct against all
+of it until the job finishes. `migrate` says so before the confirmation and
+again on the way out; `status` says so until it is resolved.
+[What that means](../guides/migration.md#stopping-short-leaves-two-spaces-in-one-index).
+
 ## `rebasis status` · `rollback` · `gc`
 
 ```bash
 rebasis status [JOB_ID] [--json] [--plain]   # takes no lock; safe during a migration
+                                             # reports mixed_space until a partial migration finishes
 rebasis rollback JOB_ID [--yes] [--no-input] # restores from the shadow copy
 rebasis gc [--apply] [--dry-run] [--json] [--job ID] [--i-understand]
 ```

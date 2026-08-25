@@ -1,6 +1,6 @@
 # rebasis
 
-**Change the embedding model of your local RAG without deleting the index.**
+**Measure whether an embedding upgrade is worth it, bridge it without reindexing when it is, and migrate safely when you are ready.**
 
 A better embedding model comes out. Your index was built with the old one. The
 standard advice is to re-embed everything — which, on a personal vault or an
@@ -55,7 +55,9 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
   chunk ids and metrics, never text.
 - **It does not take ownership of your data.** `probe` and `fit` are read-only
   and work against a read-only filesystem. `migrate` is the only command that
-  writes, it only upserts, and it never deletes.
+  writes, it only upserts, and it never deletes — not even a metadata field of
+  its own. When it needs to know which records it has already moved, it reads
+  its own manifest rather than tagging yours.
 
 ## Where to go next
 
@@ -63,3 +65,8 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
 - [What drift is](concepts/drift.md) — why this works at all
 - [The decision rule](concepts/decision-rule.md) — how the bands were chosen
 - [Migration and rollback](guides/migration.md) — the command that writes
+- [When bridging is worth it](bridge-band.md) — 62 runs, and the one it got wrong
+- [The bridge as a recall stage](cascade-band.md) — 48 runs on the assumption
+  underneath that band
+- [What a migration does to the index](index-health.md) — the check the read-back
+  cannot do

@@ -50,6 +50,7 @@ work.
 | **LangChain / LlamaIndex bridges** | adapters written, exported, documented | **No tests at all.** They duck-type a foreign object, which is exactly the code that breaks quietly on a dependency bump. |
 | **Sample and embedding cache** | `.rebasis/cache/` is defined and garbage-collected | Nothing ever writes to it, so every `probe` re-embeds from scratch. The most visible everyday cost in the tool. |
 | **`pause` / `resume` commands** | `migrate --resume <job-id>` works | There is no way to pause a running job from outside it. |
+| **Serving a two-stage arrangement** | `rebasis.serve.Cascade`, measured over 48 runs ([the evidence](docs/cascade-band.md)), with a cache and per-stage timings | The decision rule does not recommend it. What is missing is not code but a measurement that cannot be taken on a corpus: how the cache behaves under a real query distribution, and what the path costs end to end on somebody's hardware. `Cascade.stats` is the instrument; somebody's traffic is the missing input. |
 | **`doctor` against a live index** | `doctor` reports devices, backends and thread counts | It takes no store URI, so the checks that need one do not exist: encoding-profile mismatch, chunking drift, the "you do not need an adapter, truncate instead" advice for Matryoshka models, and a SQLite integrity check. |
 
 ## 0.3 — the parts that need a measurement first
@@ -94,9 +95,23 @@ shape:
   assuming.
 - **Matryoshka shortcut.** For models trained with nested representations, the
   right answer may be "truncate and renormalise", with no adapter at all.
-- **`vec2vec`-style unpaired alignment.** The one direction that would remove the
-  hardest limit in the tool: today, if you cannot run the old model any more, no
-  adapter can be fitted at all.
+- **Unpaired alignment**, in two steps. This is the one direction that would
+  remove the hardest limit in the tool: today, if you cannot run the old model
+  any more, no adapter can be fitted at all.
+
+    The step worth taking first is **Wasserstein Procrustes**
+    ([Grave, Joulin, Berthet, AISTATS 2019](https://arxiv.org/abs/1805.11222)),
+    which optimises the correspondence and the orthogonal map together rather
+    than requiring a dictionary. It fits this codebase almost exactly: the
+    orthogonal solve already exists and is already the winning candidate, the
+    only new part is an assignment step calling it each iteration, and it runs
+    on CPU with `scipy` plus `POT` — no torch.
+
+    **`vec2vec`** ([Jha et al., NeurIPS 2025](https://arxiv.org/abs/2505.12540))
+    stays on the list behind it. It is adversarial plus cycle-consistency
+    training, which is a great deal of machinery for a tool that runs on a
+    laptop. If the cheaper spike clears the same limit, that machinery is not
+    needed; if it does not, the failure is the argument for paying for it.
 
 ## Before 1.0
 
