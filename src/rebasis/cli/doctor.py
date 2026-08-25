@@ -170,7 +170,11 @@ def openmp_conflict() -> str:
     """
     import importlib.util
 
-    if sys.platform != "darwin":
+    # `platform.system()`, not `sys.platform`: mypy narrows the latter to the
+    # platform it is running on, so on Linux this function's body becomes
+    # unreachable and the check that reports a macOS-only conflict fails to
+    # type-check on the only platform CI runs.
+    if platform.system() != "Darwin":
         return ""
     if importlib.util.find_spec("faiss") is None or importlib.util.find_spec("torch") is None:
         return ""
