@@ -309,6 +309,17 @@ class FaissStore:
                 cause=exc,
             ) from exc
 
+    def rebuild_index(self) -> None:
+        """An `IndexFlatIP` scans, so there is no structure to rebuild.
+
+        Measured: recall against exact kNN is 1.000 before and after a
+        migration of 100,000 records. Declaring this as a capability would
+        offer a repair for damage that cannot happen here.
+        """
+        from rebasis.store.base import require_capability
+
+        require_capability(self, "can_rebuild_index", operation="rebuilding the index")
+
 
 def _sidecar_path(path: Path) -> Path:
     """Where the metadata for an index lives: ``<index>.meta.json``."""

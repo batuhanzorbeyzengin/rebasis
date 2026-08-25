@@ -228,6 +228,20 @@ class ChromaStore:
                 cause=exc,
             ) from exc
 
+    def rebuild_index(self) -> None:
+        """Chroma exposes no way to rebuild an existing collection's index.
+
+        `.modify()` reaches the query-time settings — `ef_search`, thread count,
+        batch size — and not `ef_construction` or `max_neighbors`, which are
+        construction-only. There is no supported call that reconstructs the
+        graph in place, so a collection that lost recall to a migration has to
+        be rebuilt outside rebasis: dump and re-add, or a maintenance tool such
+        as `chromadb-ops`.
+        """
+        from rebasis.store.base import require_capability
+
+        require_capability(self, "can_rebuild_index", operation="rebuilding the index")
+
 
 def _collection_names(client: Any) -> list[str]:
     try:

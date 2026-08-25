@@ -149,6 +149,12 @@ class MemoryStore:
         if self._path is not None:
             self.save(self._path)
 
+    def rebuild_index(self) -> None:
+        """A full matrix multiply has no structure to rebuild."""
+        from rebasis.store.base import require_capability
+
+        require_capability(self, "can_rebuild_index", operation="rebuilding the index")
+
     @classmethod
     def from_uri(cls, uri: StoreURI, **kwargs: Any) -> MemoryStore:
         """Open an ``.npz`` export, or an empty store.
