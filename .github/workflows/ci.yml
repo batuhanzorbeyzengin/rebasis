@@ -68,74 +68,12 @@ jobs:
             exit 1
           }
 
-  # One leg, on the declared floor. This was three — two Python versions and a
-  # macOS runner — and the cost of that was not the compute but the wall clock:
-  # a macOS job that hung for thirty minutes held every merge behind it.
-  #
-  # What each leg was for, and where that check went:
-  #
-  # * **macOS** covered the storage layer, where the two platforms genuinely
-  #   differ — directory fsync, `os.replace`, a system sqlite3 that cannot load
-  #   extensions. It also could not finish: faiss-cpu and torch each link their
-  #   own OpenMP runtime there and a process holding both aborts
-  #   (faiss-wheels#40, pytorch#149201), which is not rebasis' bug and not
-  #   rebasis' to fix. `rebasis doctor` now reports that pair, and the suite
-  #   runs on macOS locally — it is the maintainer's own platform.
-  # * **The newest Python** caught nothing the floor did not, across the runs
-  #   this repository has. `lowest direct dependencies` still pins the floor's
-  #   dependency versions, which is the check that has actually failed.
-  #
-  # Bring a leg back when there is a failure it would have caught.
-  test:
-    name: tests
-    timeout-minutes: 20
-    runs-on: ubuntu-latest
-    env:
-      # Named once so the steps below read the same way they did as a matrix.
-      PYTHON_VERSION: "3.12"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-          cache-suffix: test-ubuntu-py3.12
-      # --all-extras, not a bare sync: every backend test opens with
-      # `pytest.importorskip`, so without the store clients installed the
-      # integration step reports success having run none of them.
-      - run: uv sync --all-extras --no-group spike --python ${{ env.PYTHON_VERSION }}
-      - name: the suite
-        # One invocation, not two. Collection imports torch and every store
-        # client, and that cost is paid per process — splitting the run in half
-        # paid it twice for an isolation the markers already provide.
-        #
-        # e2e is the only test of the fit → migrate → rollback → status flow,
-        # which is the only path in the tool that writes to a user's index.
-        #
-        # `-rs` and the grep because a skip is how this job lied before it had
-        # extras: every backend test opens with `pytest.importorskip`, and a
-        # suite that skipped seventy tests at collection reports the same green
-        # summary line as one that ran them.
-        #
-        # Not parallelised, and measured rather than assumed: `-n auto --dist
-        # loadfile` on the eight-core host took 3m41s against 3m53s serial — a
-        # 5% saving, because the suite is already fast enough that xdist's
-        # per-worker collection dominates. It also broke two tests that depend
-        # on the console width. `pytest-xdist` stays a dependency for a
-        # developer who wants it locally.
-        run: |
-          set -o pipefail
-          uv run pytest -m "unit or property or contract or integration or e2e" \
-            -q -rs | tee /tmp/results.txt
-          if grep -qiE "SKIPPED.*(not installed|extra )" /tmp/results.txt; then
-            echo "::error::a backend was skipped for a missing dependency"
-            grep -iE "SKIPPED.*(not installed|extra )" /tmp/results.txt
-            exit 1
-          fi
-
+  # The only job that runs the suite. It was two — a `tests` job and this one
+  # — running very nearly the same tests twice, for fourteen minutes of runner
+  # time and one extra thing to go red. This is the wider selection of the two,
+  # so nothing is lost by keeping it and dropping the other.
   coverage:
-    name: coverage floors
+    name: tests and coverage floors
     timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
@@ -154,9 +92,27 @@ jobs:
         # ones need the finished report, which is why the check below is a
         # script and not a test: a test reading coverage.json runs inside the
         # session that writes it, so it can only see the previous run's numbers.
+        #
+        # `not perf` as well as `not network`. The perf layer asserts timing,
+        # and a shared runner cannot measure timing: this job failed twice on
+        # `test_batching_amortises_the_per_call_cost`, by 1% and by 2.6%, which
+        # is noise wearing a red X. ADR 11 already says absolute numbers belong
+        # on a fixed runner — so do the ratios. The whole layer runs on the
+        # project's own host, which is the machine its numbers describe.
+        #
+        # `-rs` and the grep for skips carry over from the job this replaced: a
+        # backend test that opens with `pytest.importorskip` reports the same
+        # green summary whether it ran or was never installed, and that is how
+        # this suite once lied about covering five stores.
         run: |
-          uv run pytest -m "not network" -q -p no:warnings \
-            --cov=rebasis --cov-report=json:reports/coverage.json
+          set -o pipefail
+          uv run pytest -m "not network and not perf" -q -rs \
+            --cov=rebasis --cov-report=json:reports/coverage.json | tee /tmp/results.txt
+          if grep -qiE "SKIPPED.*(not installed|extra )" /tmp/results.txt; then
+            echo "::error::a backend was skipped for a missing dependency"
+            grep -iE "SKIPPED.*(not installed|extra )" /tmp/results.txt
+            exit 1
+          fi
       - name: the modules where a bug costs data
         run: uv run python tools/check_coverage_floors.py
 
@@ -221,27 +177,6 @@ jobs:
         # test the pinned versions instead of the declared floors — which is how
         # three wrong lower bounds survived in `[project.optional-dependencies]`.
         run: .venv/bin/pytest -m "unit or contract" -q
-
-  memory:
-    name: memory ceilings
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    # Unlike the wall-clock gates, an exceeded memory ceiling **blocks**.
-    # A ceiling is an absolute threshold rather than a comparison against a
-    # noisy baseline, so there is no false-positive trade-off to make.
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-          # Distinct per job: parallel jobs sharing one key raced to
-          # reserve it, and the losers logged a failed cache save.
-          cache-suffix: memory
-      - run: uv sync --no-group spike
-      - name: ceilings and the scaling invariant
-        run: uv run pytest tests/performance/test_memory_ceiling.py -m perf -q
 
   docs:
     name: docs build
