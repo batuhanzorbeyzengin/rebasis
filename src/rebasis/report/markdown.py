@@ -125,6 +125,31 @@ _DECISION_COLOUR = {
 }
 
 
+#: What the cascade figure is, and what rebasis does not do with it.
+_CASCADE_EXPLAINER = (
+    "A two-stage arrangement is bounded by whether the relevant document reached "
+    "the candidate set, not by where the bridge ranked it — which is a weaker "
+    "requirement, and measurably so: across 24 runs single-stage bridging beat "
+    "keeping the current model in 0, and a two-stage arrangement in 16 "
+    "([the measurement](../cascade-band.md)). **rebasis measures this and does not "
+    "serve it.** Building it means re-embedding N documents per query, which is a "
+    "different cost class from the mapping, and needs a cache that does not exist "
+    "yet. Treated as a reason to look, not as a recommendation."
+)
+
+#: Why the bound is in the report at all, and what it is not.
+_GEOMETRY_EXPLAINER = (
+    "δ compares the two models' pairwise similarities on the same documents; the "
+    "bound is Corollary 1 of [Maystre et al., *When Embedding Models Meet*]"
+    "(https://arxiv.org/abs/2510.13406). It costs one Gram-matrix difference and "
+    "no fit, so it is known before the adapter search starts. It runs one way: "
+    "geometry preserved means an alignment exists, not that retrieval will find "
+    "it. Where a low bound sits next to a low ARR, the alignment was available "
+    "and something else lost it — a prefix, an encoding mismatch, or a corpus "
+    "the fit sample did not cover."
+)
+
+
 def render_markdown(result: ProbeResult, *, store_uri: str = "", title: str = "") -> str:
     """Render a probe result as Markdown."""
     decision = result.decision
@@ -139,6 +164,8 @@ def render_markdown(result: ProbeResult, *, store_uri: str = "", title: str = ""
 
     lines.extend(_headline_numbers(result))
     lines.extend(_warnings(result))
+    lines.extend(_cascade(result))
+    lines.extend(_geometry(result))
     lines.extend(_baselines(result))
     lines.extend(_candidates(result))
     lines.extend(_how_to_read(result))
@@ -220,6 +247,61 @@ def _warnings(result: ProbeResult) -> list[str]:
     lines.extend(f"- {warning}" for warning in result.decision.warnings)
     lines.append("")
     return lines
+
+
+def _cascade(result: ProbeResult) -> list[str]:
+    """What the same adapter would be worth feeding a rerank.
+
+    Reported after the decision, never inside it. `rebasis.serve.Cascade` does
+    serve this arrangement — what keeps it out of the decision is that its cost
+    depends on how often a candidate is already cached, which is a property of a
+    query log rather than of the corpus this run measured.
+    """
+    decision = result.decision
+    advantage = decision.cascade_advantage
+    if advantage is None or decision.cascade_arr is None:
+        return []
+
+    single = decision.bridge_advantage
+    comparison = (
+        f" — against {single:.2f}x when the bridge produces the final ranking"
+        if single is not None
+        else ""
+    )
+    return [
+        "### If the bridge fed a rerank instead",
+        "",
+        (
+            f"Used as a **recall stage** — the adapter retrieves a candidate set and "
+            f"the new model reorders it in its own space — this adapter retains "
+            f"**{decision.cascade_arr:.3f}** of what a full reindex finds at that depth, "
+            f"putting the break-even at **{advantage:.2f}x**{comparison}."
+        ),
+        "",
+        _CASCADE_EXPLAINER,
+        "",
+    ]
+
+
+def _geometry(result: ProbeResult) -> list[str]:
+    """The bound that was available before anything was fitted.
+
+    Placed after the measurement rather than before it, deliberately. It is a
+    ceiling on what an orthogonal alignment could do, and a reader who meets a
+    ceiling first will read the measurement as a shortfall against it. The
+    measurement is the answer; this says what the geometry permitted.
+    """
+    geometry = result.geometry
+    if geometry is None or geometry.n_pairs == 0 or geometry.delta != geometry.delta:
+        return []
+    return [
+        "### What the geometry allowed",
+        "",
+        geometry.explain(),
+        "",
+        _GEOMETRY_EXPLAINER,
+        "",
+    ]
 
 
 def _baselines(result: ProbeResult) -> list[str]:

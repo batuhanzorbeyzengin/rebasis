@@ -284,6 +284,22 @@ def print_result(result: Any) -> None:
     )
     console.print(f"  adapter     {result.best.name} ({result.best.n_params:,} parameters)")
     console.print(f"  ground truth {result.ground_truth_tier.upper()}")
+    # A ceiling, printed under the measurement it is a ceiling on. Not shown
+    # when it is vacuous: "≥ -0.4 cosine" is not a fact anybody can use.
+    cascade = decision.cascade_advantage
+    if cascade is not None and decision.cascade_arr is not None:
+        console.print(
+            f"  cascade     [bold]{decision.cascade_arr:.3f}[/bold] retained at candidate "
+            f"depth  [dim](break-even {cascade:.2f}x if the new model reranks; "
+            f"measured, not served)[/dim]"
+        )
+    geometry = getattr(result, "geometry", None)
+    if geometry is not None and geometry.informative:
+        console.print(
+            f"  geometry    δ {geometry.delta:.4f}  "
+            f"[dim]any orthogonal alignment lands within {geometry.bound:.3f} "
+            f"(cosine ≥ {geometry.cosine_floor:.3f})[/dim]"
+        )
     if decision.borderline:
         console.print("  [yellow]borderline — the interval spans a decision boundary[/yellow]")
     for warning in decision.warnings:
