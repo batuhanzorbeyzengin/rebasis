@@ -296,6 +296,160 @@ class TestFitAndMigrate:
         assert rolled.exit_code == EXIT_OK, rolled.output
         np.testing.assert_array_equal(_vectors(corpus), before)
 
+    def test_migrate_measures_what_the_index_can_still_find(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """The check the read-back cannot do.
+
+        Verifying a write proves the store took the vector. It does not prove
+        the vector can still be retrieved, and on a graph index those are
+        separate questions — the edges were chosen from the geometry the old
+        vectors had. The store here searches exactly, so the honest answer is
+        "no change"; what is being tested is that the question gets asked.
+        """
+        out = corpus["tmp"] / "adapter.rbs"
+        runner.invoke(app, fit_args(corpus, out))
+
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == EXIT_OK, result.output
+        assert "recall@10 against exact kNN" in result.output
+
+    def test_the_health_check_can_be_turned_off(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """It costs two scans of the collection, which on a large index is a
+        real amount of time to spend on a diagnostic."""
+        out = corpus["tmp"] / "adapter.rbs"
+        runner.invoke(app, fit_args(corpus, out))
+
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--no-health-check",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == EXIT_OK, result.output
+        assert "exact kNN" not in result.output
+
+    def test_rebuild_index_says_so_when_the_backend_cannot(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """Asking for a rebuild on a backend that has no index is not an error.
+
+        The in-memory store searches by matrix multiply, so there is no
+        structure to rebuild and nothing was damaged. What must not happen is
+        the flag appearing to work: the migration succeeds and the command says
+        plainly that the rebuild was not available.
+        """
+        out = corpus["tmp"] / "adapter.rbs"
+        runner.invoke(app, fit_args(corpus, out))
+
+        result = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--rebuild-index",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == EXIT_OK, result.output
+        assert "index rebuild not available" in result.output
+
+    def test_a_limited_run_says_the_index_is_now_mixed(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """The whole CLI path, on a store that really got half rewritten.
+
+        `--limit` is what the migration guide recommends for trying a
+        migration, and it is the flag that most reliably produces an index
+        holding both models' vectors. The unit tests cover the manifest query;
+        this covers the thing a user would actually run into.
+        """
+        out = corpus["tmp"] / "adapter.rbs"
+        runner.invoke(app, fit_args(corpus, out))
+
+        migrated = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--limit",
+                "20",
+                "--yes",
+            ],
+        )
+
+        assert migrated.exit_code == EXIT_OK, migrated.output
+        # Once before the confirmation, once on the way out.
+        assert "--limit stops this run short" in migrated.output
+        assert "two embedding spaces" in migrated.output
+
+        status = runner.invoke(app, ["status", "--state-dir", str(corpus["state"])])
+        assert "two embedding spaces" in status.output
+
+    def test_finishing_the_job_clears_the_warning(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """Resuming to completion puts the index back into one space, and the
+        warning has to stop — a notice that never clears is one people learn to
+        ignore before the day it matters."""
+        out = corpus["tmp"] / "adapter.rbs"
+        runner.invoke(app, fit_args(corpus, out))
+        runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--limit",
+                "20",
+                "--yes",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "migrate",
+                "--resume",
+                _latest_job(corpus),
+                "--state-dir",
+                str(corpus["state"]),
+                "--yes",
+            ],
+        )
+
+        status = runner.invoke(app, ["status", "--state-dir", str(corpus["state"])])
+
+        assert "two embedding spaces" not in status.output
+
     def test_resume_needs_only_the_job_id(self, corpus) -> None:  # type: ignore[no-untyped-def]
         """A migration is resumed after an interruption, which is exactly when
         the adapter path and store URI are least likely to still be to hand.
