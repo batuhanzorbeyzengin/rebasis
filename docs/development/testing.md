@@ -37,7 +37,12 @@ most likely to get wrong quietly:
 corpora large enough that nobody notices in development.
 
 **Truthful capabilities.** A store that claims more than it can do fails halfway
-through a migration instead of at second zero.
+through a migration instead of at second zero. That now covers
+`can_rebuild_index` as well: a backend that declares it has to actually rebuild
+when asked, and one that does not has to refuse rather than silently do nothing.
+Which of the two a backend is decides whether a migration's cost to the search
+structure is recoverable — see [what a migration does to the
+index](../index-health.md).
 
 ## Performance tests
 

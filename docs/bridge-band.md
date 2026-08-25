@@ -1,8 +1,8 @@
 # When bridging is worth it — the measured band
 
-The design asks one question: can you change the embedding model of a local RAG
-without deleting the index? The mechanism works. Whether it is *worth using* has
-a narrower answer than expected, and this document is the measurement behind it.
+The design asks one question: can you change an index's embedding model without
+rebuilding the index? The mechanism works. Whether it is *worth using* has a
+narrower answer than expected, and this document is the measurement behind it.
 
 **Setup.** 29 runs over eight corpora, with a further 33 runs over eleven
 corpora held out in section 8 to check the rule against evidence it was not
@@ -321,13 +321,45 @@ Across all 33 runs the tool recommended acting on 4, sitting still on 10
 
 ---
 
-## 9. What this does not establish
+## 9. The assumption every number here makes
+
+Everything above measures the bridge producing the **final ranking**, inside the
+old index. That is what `Bridge` does today and it is the arrangement the
+decision rule was calibrated for, so it is the right thing to have measured.
+
+It is not the only arrangement. If the bridge produces a *candidate set* which
+the new model reorders in its own space, the only thing that can be lost is a
+relevant document that never reached the top N — a weaker requirement than
+ranking it in the top 10, and one the same adapters meet far more often.
+Measured on the same ladder over 48 runs, on the twelve CQADupStack forums plus
+FiQA, SciFact, NFCorpus and ArguAna:
+
+| | beat keeping the current model |
+|---|---|
+| single stage | **1 / 48** |
+| two stage, candidates at 200 | **36 / 48** |
+| two stage, of the 37 runs where a reindex actually helps | **36 / 37** |
+
+Nothing in this document changes. That harness reproduces every figure here —
+retention at nDCG@10 0.717 against 0.714–0.722, the gain/retention
+anti-correlation −0.933 against −0.958 and −0.940, the naive swap at 0.151
+against 0.125–0.145, and the break-even's sign right 48 times out of 48.
+The squeeze is exactly where it was. What changes is which
+quantity bounds the arrangement, and that is a different question from how good
+the adapter is. [The cascade measurement](cascade-band.md).
+
+## 10. What this does not establish
 
 - **Small models.** Everything measured is 256–768 dimensional. A 2021-era model
   to a 2025-era one may sit further right on the gain axis than anything here.
-- **Academic corpora.** BEIR is real text with real judgements, but its queries
-  are constructed claims and article titles rather than what someone types into
-  their own notes.
+- **Academic corpora**, and this one now has a number on it. BEIR is real text
+  with real judgements, but its queries are constructed claims and article
+  titles rather than what someone types into their own notes. Re-run on MMTEB's
+  hard-negative HotpotQA and FEVER plus TREC-COVID, the gain/retention
+  anti-correlation measured **−0.454** against the −0.933 the same harness gets
+  on these corpora — the squeeze is a property of this corpus family more than
+  it is a law. The break-even itself held, 9 of 9, on thresholds it was never
+  fitted to ([the runs](cascade-band.md#5-a-different-regime-hard-negatives)).
 - **One adapter family.** Retention is a property of the adapters `auto` fits.
   A better adapter moves the whole band, and that is where the headroom is.
 - **English only.**

@@ -28,7 +28,10 @@ __all__ = ["app"]
 
 app = typer.Typer(
     name="rebasis",
-    help="Change the embedding model of your local RAG without deleting the index.",
+    help=(
+        "Measure whether an embedding upgrade is worth it, bridge it without "
+        "reindexing when it is, and migrate safely when you are ready."
+    ),
     no_args_is_help=True,
     # Completion is on. The arguments this CLI takes are the kind nobody types
     # correctly twice — store URIs like `chroma:///long/path#collection` and

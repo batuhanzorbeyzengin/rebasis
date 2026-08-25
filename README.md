@@ -8,7 +8,7 @@
 <h1 align="center">rebasis</h1>
 
 <p align="center">
-  <strong>Change the embedding model of your local RAG without deleting the index.</strong>
+  <strong>Measure whether an embedding upgrade is worth it, bridge it without reindexing when it is, and migrate safely when you are ready.</strong>
 </p>
 
 <p align="center">
@@ -45,10 +45,41 @@ results = collection.query(query_embeddings=q, n_results=10)
 
 That is the whole integration: one line, in front of the query you already run.
 
-It also tells you whether to bother — which, measured honestly, is **not most of
-the time**. That is the other half of the tool, and the more useful half.
+It also tells you whether to bother, which is the more useful half:
+
+> Measured across **62 model migrations** on real corpora with human relevance
+> judgements: a naive model swap retains **12.5%** of what a full reindex gives
+> you; bridging retains **71%**.
+>
+> rebasis recommended bridging in **12 of those 62**. The other fifty, the
+> honest answer was "reindex" or "you did not need this upgrade", and it said so
+> instead of selling you the adapter.
+
+The second number is the one that matters. A tool that always recommends itself
+is not a measurement.
 
 ---
+
+## What rebasis adds
+
+Aligning two embedding spaces is not new, and rebasis does not claim it is: the
+transform is orthogonal Procrustes, published in 1966. What the tool adds is
+everything around it, because the alignment is the easy part.
+
+- **It decides whether the upgrade is worth doing at all.** Retention alone
+  cannot tell you: an adapter that recovers 94% of a reindex still loses to a 3%
+  upgrade. `probe` weighs both and returns a decision — which is sometimes to
+  reindex instead, or to stay where you are.
+- **It measures against your queries, on your corpus.** Not a benchmark average.
+  A real query log is what makes the answer yours; without one the tool says the
+  result is provisional rather than guessing.
+- **It rewrites indexes safely when you are ready.** Shadow copy before every
+  batch, read-back after, a fresh-connection check when the queue empties,
+  `rollback` to the originals. Five backends, on every commit.
+- **It knows a half-migrated index is a broken one.** A migration stopped
+  part-way leaves two embedding spaces in one collection, and no ordinary query
+  is correct against both. rebasis detects that, says so unprompted, and can
+  serve such an index correctly while the job finishes.
 
 ## Status: 0.1
 
@@ -63,14 +94,140 @@ move before 1.0. Breaking changes go in the changelog with the reason.
 **`migrate` writes to your index.** It is the one command that does. It is
 covered by tests against every supported backend on every commit, it copies each
 batch before it overwrites it, it verifies the write on a fresh connection when
-it finishes, and `rollback` restores the originals from a bit-identical shadow
-copy — exactly, unless your store rewrites what it is given, and then to within
-its own float32 round trip. But nobody has
-yet run it against an index they could not rebuild. Until somebody has: take a
-backup that rebasis is not part of, and try `--limit` on a slice first.
+it finishes, it measures whether the index can still *find* what it wrote, and
+`rollback` restores the originals from a bit-identical shadow copy — exactly,
+unless your store rewrites what it is given, and then to within its own float32
+round trip. But nobody has yet run it against an index they could not rebuild.
+Until somebody has: take a backup that rebasis is not part of, and try `--limit`
+on a slice first —
+[knowing what that leaves behind](https://batuhanzorbeyzengin.github.io/rebasis/guides/migration/#stopping-short-leaves-two-spaces-in-one-index).
 Everything else — `probe`, `fit`, `eval` — only reads.
 
 ---
+
+## How it works
+
+A small learned transform — orthogonal Procrustes by default, chosen from six
+candidates by measurement — maps the new model's query vector into the old
+model's space.
+
+Fitting is **independent of corpus size**: it depends only on how many matched
+pairs you can produce, and a few thousand is enough for a 500k-chunk vault. The
+transform itself fits in seconds; **generating the paired embeddings is the
+expensive part**, and how long that takes is a property of your model or API
+rather than of rebasis.
+
+```bash
+# 1. Diagnose. What do I actually lose if I switch?
+rebasis probe --store chroma:///path/to/db#notes \
+  --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
+  --queries queries.jsonl --sample 10000 --report report.html
+
+# 2. Fit the adapter.
+rebasis fit --store chroma:///path/to/db#notes \
+  --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
+  --method auto --pairs 4000 --out adapters/minilm-to-bge.rbs
+
+# 3. Optional: rewrite the index in the background, a batch at a time.
+#    --dry-run prints the plan and stops, which is the first thing to run.
+#    --limit stops short on purpose; migrate and status both say what that
+#    leaves behind, and MixedSpaceSearch serves it correctly meanwhile.
+rebasis migrate --adapter adapters/minilm-to-bge.rbs \
+  --store chroma:///path/to/db#notes --priority access --limit 5000
+
+# Undo it, from the shadow copy.
+rebasis rollback <job-id>
+```
+
+`probe` and `fit` print the command to run next. `migrate` shows an `X of Y` bar
+and resumes with `rebasis migrate --resume <job-id>` and nothing else.
+`rebasis doctor` lists the backends, embedders and devices it can see — run it
+first when anything is confusing.
+
+### In a script
+
+Every command that prompts takes `--yes` and refuses to guess without it. The
+commands that report take `--json`:
+
+```bash
+# Gate a deploy on the decision, not on a human reading a table.
+decision=$(rebasis probe --store "$STORE" --old "$OLD" --new "$NEW" \
+  --queries queries.jsonl --json | jq -r .decision)
+
+# Refuse to serve from an index that is halfway between two models.
+rebasis status --json | jq -e 'all(.mixed_space == null)' >/dev/null
+```
+
+Progress goes to stderr, so `--json` on stdout stays parseable while you watch
+the run move. `rebasis doctor --json` is the thing to attach to a bug report.
+
+## What the measurement says
+
+Measured on **11 corpora, 398,010 documents and 10,346 questions real people
+typed**, with human relevance judgements, scored with
+[ranx](https://github.com/AmenRa/ranx) rather than with rebasis' own metric code.
+
+### The decision rule
+
+`probe` returns a decision, not a number. What decides is the **break-even**:
+
+```
+bridge_advantage = ARR × upgrade_gain
+```
+
+— how much of a full reindex the adapter recovers, times how much better the new
+model is *on your corpus*. Above 1.0 bridging beats leaving things alone. It has
+been right **61 times out of 62**, including 32 of 33 on corpora it was frozen
+before it ever saw.
+
+Neither factor settles it alone, and they pull against each other: a big upgrade
+means the old model was weak, and a weak source space carries less for the
+adapter to map. Measured correlation **−0.958**, reproduced at **−0.940** on the
+held-out corpora. That is why the band is narrow, and why measuring first is the
+whole idea.
+
+**The break-even needs a real query log.** Without `--queries`, rebasis can tell
+you how well an adapter bridges but not whether bridging is worth it — so it
+says that, rather than guessing. `--synth-queries keywords` estimates it from
+your documents when you have no log, and marks the result provisional.
+
+Full workings, including the runs where it was wrong:
+[when bridging is worth it](docs/bridge-band.md).
+
+### Three findings worth knowing about
+
+**The band widens if the bridge only has to recall.** Every number above assumes
+the bridge produces the final ranking. If it instead produces a candidate set
+that the new model reorders in its own space, it is bounded by recall@N rather
+than nDCG@10 — a weaker requirement. Measured over **48 runs on sixteen
+corpora**: single-stage bridging beat doing nothing in **1**, a two-stage
+arrangement in **36** — and in 36 of the 37 runs where a reindex was genuinely
+an upgrade. `probe` reports what your adapter would retain that way, and
+`rebasis.serve.Cascade` serves it. [The measurement](docs/cascade-band.md).
+
+**A default migration costs no measurable retrieval quality.** Rewriting vectors
+does not rewrite the graph an index built around them, so it can cost recall
+even when every vector is correct. Measured on 100,000 records: with the
+orthogonal transform `auto` picks, the index's own recall against exact kNN
+moved within measurement noise on every backend. Non-orthogonal transforms
+degrade it for real — up to 12 points — so `migrate` measures before and after
+and names any drop. [The measurement](docs/index-health.md).
+
+**A half-migrated index answers a third of its queries wrongly, and now says
+so.** Measured, an ordinary bridged query against a half-migrated collection
+dropped from a hit rate above 0.90 to below 0.65 — silently. `migrate` and
+`status` now report it unprompted, `status --json` carries it as `mixed_space`,
+and `rebasis.serve.MixedSpaceSearch` restores it to above 0.90 at every stage of
+the migration.
+
+### What migrating costs, in one paragraph
+
+Record loss: **none observed** across the migrate-and-rollback cycle that runs
+on five backends on every commit — shadow copy before each batch, read-back
+after, a fresh-connection check when the queue empties, and `rollback` to
+bit-identical originals. That is a tested property, not a guarantee against a
+storage bug or a failing disk, which is why the advice above is still to take a
+backup rebasis is not part of.
 
 ## Supported backends
 
@@ -91,132 +248,27 @@ Every row above runs the same store contract suite on every commit, plus a
 migrate-and-rollback test that checks the vectors really changed, the record
 count did not, the text survived and the originals came back.
 
-**FAISS is the one to read twice.** It stores vectors and returns row numbers;
-ids, text and metadata stay yours to keep. rebasis expects a `vectors.meta.json`
-sidecar next to the index, and can only write to an index wrapped in
-`IndexIDMap2`. Both limits are reported through the backend's capabilities, so
-`migrate` refuses at second zero rather than halfway through.
+**FAISS is the one to read twice.** It is an index, not a database: it stores
+vectors and returns row numbers, so ids and text stay yours to keep in a
+`vectors.meta.json` sidecar, and writing needs an `IndexIDMap2`. Both limits are
+declared through the backend's capabilities, so `migrate` refuses at second zero
+rather than halfway through.
 
 ### Not there yet
 
-Listed because they are planned, and marked because they are not finished. None
-of these is ready to point at an index you care about.
-
-| | Status | What is missing |
-|---|---|---|
-| **LangChain** vector stores | code written, **no tests** | The adapter wraps the store object you already have and duck-types its methods, which is the code most likely to break quietly on a dependency bump — and nothing yet catches that. [Guide](docs/guides/langchain.md). |
-| **LlamaIndex** vector stores | code written, **no tests**, read-only | Same adapter, and it declares no write capability, so `migrate` refuses it by design rather than by accident. |
-| **usearch** | not started | The second "bare index plus side metadata" backend, alongside FAISS. |
-
-What comes after these, and what is deliberately not planned:
-[ROADMAP.md](ROADMAP.md).
-
-A bridge adapter is worth having because it reaches dozens of stores for the
-cost of one file. The catch is that those interfaces do not offer
-`iter_records(with_vectors=True)` and `upsert_vectors` uniformly, so a bridged
-store reports honestly restricted capabilities: `probe` and the bridge work,
-`migrate` may not. Partial support beats none; silent partial support does not.
+**LangChain** and **LlamaIndex** vector stores have adapters written and
+**no tests** — they duck-type a foreign object, which is the code most likely to
+break quietly on a dependency bump. **usearch** has not been started. A bridge
+adapter reaches dozens of stores for the cost of one file, but those interfaces
+do not expose `iter_records(with_vectors=True)` and `upsert_vectors` uniformly,
+so a bridged store declares honestly restricted capabilities: `probe` and the
+bridge work, `migrate` may not. Partial support beats none; *silent* partial
+support does not. [ROADMAP.md](ROADMAP.md) has the rest, including what is
+deliberately not planned.
 
 **Embedding backends:** `sentence-transformers`, `fastembed` (ONNX, no torch),
 `ollama`, any OpenAI-compatible API, `llama-cpp`, or vectors you computed
 yourself.
-
-## How it works
-
-A small learned transform — orthogonal Procrustes by default, chosen from six
-candidates by measurement — maps the new model's query vector into the old
-model's space.
-
-Fitting it is **independent of corpus size**: it depends only on how many
-matched pairs you can produce. For a 500k-chunk vault, embedding a few thousand
-chunks with the new model is enough. Fitting takes seconds, not hours.
-
-```bash
-# 1. Diagnose. What do I actually lose if I switch?
-rebasis probe --store chroma:///path/to/db#notes \
-  --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
-  --queries queries.jsonl --sample 10000 --report report.html
-
-# 2. Fit the adapter.
-rebasis fit --store chroma:///path/to/db#notes \
-  --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
-  --method auto --pairs 4000 --out adapters/minilm-to-bge.rbs
-
-# 3. Optional: rewrite the index in the background, a batch at a time.
-#    --dry-run prints the plan and stops, which is the first thing to run.
-rebasis migrate --adapter adapters/minilm-to-bge.rbs \
-  --store chroma:///path/to/db#notes --priority access --limit 5000
-
-# Undo it, from the shadow copy.
-rebasis rollback <job-id>
-```
-
-`probe` and `fit` print the command to run next, so you do not have to come back
-here for step two. `migrate` shows an `X of Y` bar while it runs, and resumes
-from where it stopped with `rebasis migrate --resume <job-id>` and nothing else.
-
-`rebasis doctor` lists the backends, embedders and devices it can see. Run it
-first when anything is confusing.
-
-### In a script
-
-Every command that prompts takes `--yes`, and refuses to guess without it rather
-than hanging or crashing. The commands that report take `--json`:
-
-```bash
-# Gate a deploy on the decision, not on a human reading a table.
-decision=$(rebasis probe --store "$STORE" --old "$OLD" --new "$NEW" \
-  --queries queries.jsonl --json | jq -r .decision)
-
-rebasis migrate --adapter adapter.rbs --store "$STORE" --yes
-rebasis status --json | jq -r '.[] | select(.state=="paused") | .job_id'
-```
-
-Progress and diagnostics go to stderr, so `--json` on stdout stays parseable
-while you still see the run move. `rebasis doctor --json` is the thing to attach
-to a bug report.
-
-## What the measurement says
-
-Measured on **11 corpora, 398,010 documents and 10,346 questions real people
-typed**, with human relevance judgements, scored with
-[ranx](https://github.com/AmenRa/ranx) rather than with rebasis' own metric code.
-
-- **Bridging retrieves 6.4× what swapping the model naively gives.** A naive
-  swap keeps 12.5% of what a full reindex would give you. Bridging keeps 71%.
-- **Bridging is worth doing about one time in five** — 12 of the 62 measured
-  pairs. The other four-fifths, the honest answer is "reindex" or "you did not
-  need this upgrade", and rebasis says so instead of selling you the adapter.
-- **The rule that decides has been right 61 times out of 62**, including 32 of
-  33 on corpora it was frozen before it ever saw.
-
-That second bullet is the point. A tool that always recommends itself is not a
-measurement.
-
-### The decision rule
-
-`probe` returns a decision, not a number. What decides is the **break-even**:
-
-```
-bridge_advantage = ARR × upgrade_gain
-```
-
-— how much of a full reindex the adapter recovers, times how much better the new
-model is *on your corpus*. Above 1.0 bridging beats leaving things alone.
-
-Neither factor settles it alone, and in practice they pull against each other: a
-big upgrade means the old model was weak, and a weak source space carries less
-for the adapter to map. Measured correlation **−0.958**, reproduced at **−0.940**
-on the held-out corpora. That is why the band is narrow, and why measuring first
-is the whole idea.
-
-**The break-even needs a real query log.** Without `--queries`, rebasis can tell
-you how well an adapter bridges but not whether bridging is worth it — so it says
-that, rather than guessing. `--synth-queries keywords` estimates it from your
-documents when you have no log, and marks the result provisional.
-
-Full workings, including the runs where it was wrong:
-[when bridging is worth it](docs/bridge-band.md).
 
 ## Limits — stated plainly
 
@@ -279,6 +331,11 @@ reference.
   an OpenTelemetry setup
 - [`docs/bridge-band.md`](docs/bridge-band.md) — every number above, with the
   runs that produced it
+- [`docs/cascade-band.md`](docs/cascade-band.md) — 57 runs on the assumption
+  underneath that band, including nine on the hard-negative tasks where the
+  squeeze turns out to be much weaker
+- [`docs/index-health.md`](docs/index-health.md) — what a migration does to the
+  index, on two graph backends and five adapters
 - [`docs/adr/`](docs/adr/) — the decisions that would otherwise be re-argued,
   and the measurement behind each
 - [`docs/m0-findings.md`](docs/m0-findings.md) — 84 configurations measured
