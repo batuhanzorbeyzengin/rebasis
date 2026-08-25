@@ -12,6 +12,7 @@ full disk or an out-of-memory batch and resumes where it stopped.
 from __future__ import annotations
 
 from rebasis.migrate.engine import MigrationEngine, MigrationResult
+from rebasis.migrate.health import HealthComparison, IndexHealth, measure_index_health
 from rebasis.migrate.power import PowerState, ResourceMonitor, power_state
 from rebasis.migrate.queue import JobQueue, QueueStats, set_job_state
 from rebasis.migrate.refit import (
@@ -20,15 +21,19 @@ from rebasis.migrate.refit import (
     RefitPolicy,
     consider_refit,
 )
+from rebasis.migrate.spaces import MixedSpace, mixed_spaces, mixed_spaces_for
 from rebasis.migrate.states import ItemState, JobState, can_transition
 
 __all__ = [
     "MIN_IMPROVEMENT",
+    "HealthComparison",
+    "IndexHealth",
     "ItemState",
     "JobQueue",
     "JobState",
     "MigrationEngine",
     "MigrationResult",
+    "MixedSpace",
     "PowerState",
     "QueueStats",
     "RefitDecision",
@@ -36,6 +41,9 @@ __all__ = [
     "ResourceMonitor",
     "can_transition",
     "consider_refit",
+    "measure_index_health",
+    "mixed_spaces",
+    "mixed_spaces_for",
     "power_state",
     "set_job_state",
 ]

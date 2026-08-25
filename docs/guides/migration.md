@@ -96,6 +96,80 @@ Useful flags:
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
 | `--resume <job-id>` | Continue an interrupted job. |
 
+## Stopping short leaves two spaces in one index
+
+`--limit`, `--priority access` and every pause all do the same thing to the
+collection: for as long as the job is unfinished, **some records hold the new
+model's vectors and some still hold the old model's**, and there is no query
+that is correct against both.
+
+```
+bridge.to_index_space(q)   correct for the records that have not moved
+f_new(q)                   correct for the records that have
+```
+
+Whichever you send, part of the corpus is scored against a geometry it is not
+in. Nothing raises. The record count is right, the text is right, the ranking is
+wrong — and on a graph index the traversal itself is running over the mixture,
+so the damage is not limited to the scores of the records that moved.
+
+This is the reason `--limit` is recommended above as a way to *try* a migration
+rather than as a way to *pace* one. It is safe for the data — the shadow copy is
+intact either way — and it is not safe for queries in the window before the job
+finishes.
+
+rebasis will not let that window be silent. It is named three times:
+
+- in `migrate`'s preview, before you confirm, whenever `--limit` will stop the
+  run short;
+- at the end of any run that did stop short;
+- by `rebasis status`, unprompted, until the job finishes or is rolled back —
+  including in `--json`, as `mixed_space`, so a script can refuse to serve.
+
+```
+$ rebasis status
+...
+This index holds two embedding spaces. Search results are not correct until
+the migration finishes or is rolled back.
+  chroma:///path/to/db#documents holds two embedding spaces: 5,000 of 48,000
+  records (10%) have the new model's vectors and 43,000 still have the old
+  model's. …
+    rebasis migrate --resume job-8f2a1c4e0b73   (finish it)
+    rebasis rollback job-8f2a1c4e0b73           (put the index back)
+```
+
+### Searching one anyway
+
+Finishing the job or rolling it back are the two ways to *resolve* a mixed
+index. There is a third thing you can do while it is mixed, which is search it
+correctly:
+
+```python
+from rebasis.serve import Bridge, MixedSpaceSearch
+
+bridge = Bridge.load("adapters/minilm-to-bge.rbs")
+with MixedSpaceSearch(store, bridge, job_id="job-8f2a1c4e0b73") as search:
+    hits = search.search(new_model.encode(["how do I deploy?"])[0], k=10)
+```
+
+It sends **both** queries and keeps only the half each one is right about — the
+bridged query for the records that have not moved, the raw new-model query for
+the ones that have — then merges the two through the isotonic calibrator in the
+`.rbs`, which is what makes scores from two spaces comparable at all. Without a
+calibrator it falls back to reciprocal rank fusion, which discards the scores
+and uses ranks: strictly less information, and correct, where comparing raw
+scores across two spaces is not.
+
+Which records have moved is read from the **manifest**, not from the store.
+rebasis does not write a `rebasis_space` field into your payloads; the whole
+store contract is one write path that only ever replaces vectors, and the
+migration queue already knows what it moved.
+
+The cost is over-fetching: each side asks deeper than `k` and discards what
+belongs to the other, scaled by how far the migration has got.
+`search.over_fetch` reports it after every query, and the cheapest way to bring
+it down is to finish the job.
+
 ## Watching it
 
 ```bash

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from rebasis.audit import AuditWriter
     from rebasis.core.base import BaseAdapter
     from rebasis.manifest import ManifestDB
+    from rebasis.migrate.queue import QueueStats
     from rebasis.store.base import VectorStore
 
 __all__ = ["VERIFY_FRACTION", "MigrationEngine", "MigrationResult"]
@@ -550,6 +551,7 @@ class MigrationEngine:
             state = JobState.PAUSED
 
         set_job_state(self.db, self.job_id, state)
+        self._warn_if_mixed(stats)
 
         if self.audit:
             event = (
@@ -570,6 +572,31 @@ class MigrationEngine:
                 subject=self.job_id,
             )
         return state
+
+    def _warn_if_mixed(self, stats: QueueStats) -> None:
+        """Say so when the run leaves the index holding two embedding spaces.
+
+        Some records now carry the new model's geometry and some still carry the
+        old one, and there is no query that is correct against both: a bridged
+        query mis-scores the migrated half, an unbridged one mis-scores the
+        rest. Nothing raises, nothing is missing, and the ranking is wrong — so
+        the only thing standing between a user and quietly bad results is being
+        told.
+
+        Failed records count as un-migrated. They are still in the old space,
+        which is what makes the index mixed; leaving them out would report a
+        clean index that is not one.
+        """
+        unmigrated = stats.pending + stats.shadowed + stats.failed
+        if stats.done == 0 or unmigrated == 0:
+            return
+        log.warning(
+            Events.MIGRATE_INDEX_MIXED,
+            job_id=self.job_id,
+            count=unmigrated,
+            state=str(JobState.PAUSED),
+            store_backend=self.store.capabilities.name,
+        )
 
     def rollback(self, *, batch_size: int = 1024) -> int:
         """Restore the original vectors from the shadow copy.

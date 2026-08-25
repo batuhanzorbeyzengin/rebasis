@@ -72,6 +72,26 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     resume: Annotated[
         str | None, typer.Option("--resume", help="Continue an existing job id")
     ] = None,
+    health_check: Annotated[
+        bool,
+        typer.Option(
+            "--health-check/--no-health-check",
+            help=(
+                "Measure what the index's own search returns against exact kNN, "
+                "before and after. Costs two scans of the collection"
+            ),
+        ),
+    ] = True,
+    rebuild_index: Annotated[
+        bool,
+        typer.Option(
+            "--rebuild-index",
+            help=(
+                "When the run finishes, ask the store to rebuild its search "
+                "structure. Only where the backend supports it"
+            ),
+        ),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", "-n", help="Show the plan and stop, writing nothing"),
@@ -168,6 +188,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             queued=queued,
             keep_original=keep_original,
             state_dir=directory / ADAPTERS_DIR,
+            partial=limit is not None and limit < queued,
         )
         if not queued:
             console.print("[dim]Nothing to migrate.[/dim]")
@@ -185,6 +206,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
         )
         console.print()
         console.print(budget.render())
+        _note_background_reindex(opened)
         console.print()
         enforce_budget(budget, directory)
 
@@ -196,20 +218,43 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             console.print("[yellow]Nothing was written.[/yellow]")
             raise typer.Exit(code=0)
 
+        # Measured before a single vector changes, so the comparison afterwards
+        # is against this index rather than against an assumption about it.
+        # Some collections start below 1.0 — an HNSW index is approximate by
+        # construction — and a drop only means something against where it began.
+        health_before = _measure_health(opened, enabled=health_check)
+
         # X of Y over the queue: the total is known before the first batch, so
         # there is no reason to show a spinner that cannot say how far in it is.
         with count_progress(limit if limit is not None else queued, "migrating") as counter:
             result = engine.run(limit=limit, on_batch=counter.advance)
-        _report_run(result)
+
+        _report_aftermath(
+            engine,
+            result,
+            store=store,
+            db=writer.db,
+            health_before=health_before,
+            health_check=health_check,
+            rebuild_index=rebuild_index,
+        )
 
 
-def _emit_jobs(jobs: list[tuple[JobRow, Any]], *, as_json: bool) -> None:
+def _emit_jobs(
+    jobs: list[tuple[JobRow, Any]], *, as_json: bool, mixed: dict[str, Any] | None = None
+) -> None:
     """`status` for something other than a person.
 
     A Rich table renders box-drawing characters and truncates ids with an
     ellipsis, so the human view is actively hostile to `grep` and `cut`. These
     two carry the full id and no formatting.
+
+    ``mixed_space`` is in the payload rather than only in the human view because
+    it is the field a script most needs to branch on: a CI job that queries an
+    index after migrating a slice of it should be able to fail rather than
+    quietly measure the wrong thing.
     """
+    mixed = mixed or {}
     payload = [
         {
             "job_id": job.job_id,
@@ -222,6 +267,7 @@ def _emit_jobs(jobs: list[tuple[JobRow, Any]], *, as_json: bool) -> None:
             "failed": stats.failed,
             "total": stats.total,
             "rollback": "available" if job.reversible else job.state,
+            "mixed_space": (mixed[job.job_id].to_dict() if job.job_id in mixed else None),
             "created_utc": job.created_utc,
             "updated_utc": job.updated_utc,
         }
@@ -237,10 +283,170 @@ def _emit_jobs(jobs: list[tuple[JobRow, Any]], *, as_json: bool) -> None:
             "\t".join(
                 str(row[key])
                 for key in ("job_id", "state", "progress", "done", "failed", "total", "rollback")
-            ),
+            )
+            + f"\t{'mixed' if row['mixed_space'] else 'single'}",
             highlight=False,
             markup=False,
         )
+
+
+def _measure_health(store: VectorStore, *, enabled: bool) -> Any:
+    """The index's recall against exact kNN, or ``None`` when not asked for.
+
+    Never fatal. This is a diagnostic on top of a migration, and a backend whose
+    `search` behaves unexpectedly must not be the reason a migration does not
+    happen — the vectors are what matter, and every guarantee about them is
+    checked elsewhere.
+    """
+    if not enabled:
+        return None
+
+    from rebasis.migrate import measure_index_health
+
+    with console.status("Measuring what the index finds…"):
+        try:
+            return measure_index_health(store)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            console.print(f"[dim]index health check skipped: {exc}[/dim]")
+            return None
+
+
+def _report_health(store: VectorStore, before: Any, *, enabled: bool) -> None:
+    """Measure again and say what changed.
+
+    The one thing the rest of `migrate` cannot see. The read-back proves the
+    store took the write and the fresh-connection check proves it kept it;
+    neither proves the record can still be *retrieved*. A graph index chose its
+    edges from the geometry the old vectors had, and rewriting the vectors does
+    not rewrite the graph.
+    """
+    if not enabled or before is None:
+        return
+
+    after = _measure_health(store, enabled=True)
+    if after is None:
+        return
+
+    from rebasis.migrate import HealthComparison
+
+    comparison = HealthComparison(before=before, after=after)
+    console.print()
+    if comparison.delta < 0:
+        console.print(f"[yellow]index[/yellow]  {comparison.explain()}")
+        # Measured both ways: on a 100,000-record collection a rebuild
+        # recovered the whole loss from an unconstrained affine adapter, and
+        # none of it from a low-rank one, because those are different failures
+        # wearing the same number (docs/index-health.md). So this offers the
+        # move rather than promising the outcome.
+        if store.capabilities.can_rebuild_index:
+            console.print(
+                "       [dim]this backend can rebuild its index: re-run with "
+                "--rebuild-index, or trigger it yourself.[/dim]"
+            )
+    else:
+        console.print(f"[dim]index  {comparison.explain()}[/dim]")
+
+
+def _note_background_reindex(store: VectorStore) -> None:
+    """Say that the plan above is missing a line, on the backends where it is.
+
+    Measured: on a Qdrant server the same 100,000-record migration took 181-199
+    seconds against Chroma's 89-145 on the same host, and the collection kept
+    reindexing in the background after the run returned — `status: yellow` with
+    `indexed_vectors_count` above the point count, which is a rebuild over
+    overlapping segments. The estimate comes from throughput and has no line for
+    that work.
+
+    Not a warning. A backend that rebuilds is doing the right thing: it is why
+    Qdrant loses almost nothing where Chroma loses five to eight points of
+    recall. The cost simply lands in wall-clock rather than in quality, and the
+    plan should say which.
+    """
+    if not store.capabilities.can_rebuild_index:
+        return
+    console.print(
+        "  [dim]This backend rebuilds its search index as vectors change. That work "
+        "is not in the estimate above, and some of it continues after the run "
+        "finishes.[/dim]"
+    )
+
+
+def _report_aftermath(  # noqa: PLR0913 - one argument per thing the run left behind
+    engine: MigrationEngine,
+    result: MigrationResult,
+    *,
+    store: str,
+    db: Any,
+    health_before: Any,
+    health_check: bool,
+    rebuild_index: bool,
+) -> None:
+    """Everything a finished run has to say, in the order it has to say it.
+
+    Split out of the command because it is the part that grew: what the run did,
+    whether the index can still find things, and whether the collection is now
+    holding two embedding spaces. The order is not arbitrary — a rebuild has to
+    happen before the second measurement, or the measurement reports a problem
+    the user has already asked to fix.
+    """
+    from rebasis.migrate import mixed_spaces_for
+
+    _report_run(result)
+    if rebuild_index:
+        _rebuild_index(engine.store)
+    # The engine may have reopened the store for the durability check, so this
+    # measures through whatever handle it is holding now.
+    _report_health(engine.store, health_before, enabled=health_check)
+    # A run that stopped short — `--limit`, a pause, a failed batch — leaves the
+    # collection holding both models' vectors. Said while the person who did it
+    # is still looking at the terminal.
+    _print_mixed_space(mixed_spaces_for(db, store))
+
+
+def _rebuild_index(store: VectorStore) -> None:
+    """Ask the store to rebuild its search structure, if it can.
+
+    Not the default, and not automatic on a measured drop. Rebuilding changes
+    the collection's own configuration — on Qdrant it is a bump to
+    `ef_construct` — and that is the user's index, not rebasis'. What is
+    automatic is *saying* the drop happened; acting on it is asked for.
+    """
+    from rebasis.errors import RebasisError
+
+    try:
+        store.rebuild_index()
+    except RebasisError as exc:
+        console.print(f"[yellow]index rebuild not available:[/yellow] [dim]{exc.message}[/dim]")
+        return
+    console.print(
+        "[dim]index  rebuild requested; the store builds it in the background and "
+        "keeps serving from the old one meanwhile.[/dim]"
+    )
+
+
+def _print_mixed_space(states: list[Any]) -> None:
+    """Say, unprompted, that an index is holding two embedding spaces.
+
+    Printed by `status` and again by `migrate` on the way out of a run that
+    stopped short. Twice rather than once because they are read at different
+    moments: `migrate` catches the person who just did it, `status` the person
+    who comes back tomorrow wondering why search got worse.
+
+    Escaped rather than interpolated raw — a store URI carries `[` and `]` often
+    enough that Rich would eat part of it as markup.
+    """
+    from rich.markup import escape
+
+    for state in states:
+        console.print()
+        console.print(
+            "[red bold]This index holds two embedding spaces.[/red bold] "
+            "[dim]Search results are not correct until the migration finishes "
+            "or is rolled back.[/dim]"
+        )
+        console.print(f"  {escape(state.explain())}")
+        for step in state.next_steps():
+            console.print(f"    [dim]{escape(step)}[/dim]")
 
 
 def _rollback_column(job: JobRow) -> str:
@@ -439,6 +645,7 @@ def _preview(  # noqa: PLR0913 - the preview names every input it shows
     queued: int,
     keep_original: bool,
     state_dir: Path,
+    partial: bool = False,
 ) -> None:
     """Show what will happen before it happens."""
     del state_dir
@@ -453,6 +660,19 @@ def _preview(  # noqa: PLR0913 - the preview names every input it shows
     console.print(f"  models      {manifest.old_model_id} → {manifest.new_model_id}")
     console.print(f"  job         {job_id}")
     console.print(f"  rollback    {'available' if keep_original else '[red]disabled[/red]'}")
+    if partial:
+        # Said before the confirmation rather than after the run, because this
+        # is the point at which the user can still decide not to. `--limit` is
+        # recommended in the guide as the safe way to try a migration, and it
+        # is safe for the *data* — the shadow copy is intact either way. What it
+        # is not is safe for *queries* in the window before the job finishes.
+        console.print()
+        console.print(
+            "  [yellow]--limit stops this run short.[/yellow] [dim]Until the job "
+            "finishes, the index holds both models' vectors and no single query is "
+            "correct against all of it. Plan to finish or roll back before "
+            "serving from it.[/dim]"
+        )
     console.print()
 
 
@@ -483,7 +703,7 @@ def status_command(
     which is exactly when it is wanted.
     """
     from rebasis.manifest import JobRow, ManifestDB, default_state_dir, manifest_path
-    from rebasis.migrate import JobQueue
+    from rebasis.migrate import JobQueue, mixed_spaces
 
     directory = state_dir or default_state_dir()
     path = manifest_path(directory)
@@ -502,9 +722,13 @@ def status_command(
 
     parsed = [JobRow.from_row(raw) for raw in rows]
     jobs = [(job, JobQueue(db, job.job_id).stats()) for job in parsed]
+    # Every unfinished job, then narrowed to the ones being shown: `status
+    # <job-id>` should report on that job and not on somebody else's.
+    shown = {job.job_id for job in parsed}
+    mixed = {state.job_id: state for state in mixed_spaces(db) if state.job_id in shown}
 
     if as_json or plain:
-        _emit_jobs(jobs, as_json=as_json)
+        _emit_jobs(jobs, as_json=as_json, mixed=mixed)
         db.close()
         return
 
@@ -516,6 +740,7 @@ def status_command(
     table.add_column("done", justify="right")
     table.add_column("failed", justify="right")
     table.add_column("rollback")
+    table.add_column("index")
 
     for job, stats in jobs:
         table.add_row(
@@ -526,8 +751,10 @@ def status_command(
             f"{stats.done:,}",
             f"{stats.failed:,}" if stats.failed else "—",
             _rollback_column(job),
+            "[red]mixed[/red]" if job.job_id in mixed else "[dim]single[/dim]",
         )
     console.print(table)
+    _print_mixed_space(list(mixed.values()))
     db.close()
 
 
