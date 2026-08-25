@@ -100,3 +100,40 @@ one to two points, against a real cost in fit time.
 correlation is +0.901 — and rejected. A correlation over fifteen runs with two
 source models is not a predictor, and a tool that guessed instead of measuring
 would be the thing this project exists not to be.
+
+## Independently confirmed, and one thing added
+
+Maystre, Ortega Gonzalez, Park, Dolga, Berariu, Zhao and Ciosek,
+[*When Embedding Models Meet: Procrustes Bounds and
+Applications*](https://arxiv.org/abs/2510.13406), reached the same place from
+theory. Their motivating scenario is this one — the query model is upgraded and
+the document embeddings cannot be recomputed — and two of their results bear
+directly on this decision.
+
+**Why the most constrained candidate wins.** They compare orthogonal Procrustes
+against unconstrained linear alignment. By construction the unconstrained
+solution cannot be worse on alignment error, and yet orthogonal wins on
+retrieval, *particularly when upgrading to a stronger query model* (their
+Figure 5): preserving the stronger source model's geometry keeps information an
+unconstrained map discards. That is the mechanism behind `procrustes_centered`
+winning 15 out of 15 above, arrived at independently.
+
+**A bound is not the prediction that was rejected.** Their Corollary 1 states
+that if two models' pairwise inner products agree to within δ, the best
+orthogonal alignment satisfies `E[‖x̄ᵢ − yᵢ‖²] ≤ √(2D)·δ`. That is a
+one-directional guarantee, data-independent and independent of `N`, and it costs
+one Gram-matrix difference — no fit at all.
+
+rebasis now reports δ and the bound it implies (`rebasis.core.geometry`,
+`probe`'s report). It does **not** overturn the rejection above, because it is a
+different kind of object: it says an alignment of at least this quality exists,
+never that retrieval will realise it. The converse does not hold, and a low
+bound beside a low ARR is not a contradiction — it means the alignment was
+available and something else lost it. The measurement remains the answer.
+
+Two further notes from the same paper, recorded because they touch decisions
+made here: their sample saturation sits near 10,000 pairs against M0's 4,000,
+which is consistent with the table above showing the point being model-pair
+dependent rather than universal; and their zero-padding of the smaller
+embedding under a dimension mismatch is the same convention as
+`IdentityAdapter`'s padding and the `hard_drift` 384→256 scenario.

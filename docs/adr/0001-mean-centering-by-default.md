@@ -44,6 +44,29 @@ and a third of the latency, which changed the default candidate ordering too.
   is two extra vector adds on the query path, measured at well under the 15 µs
   budget.
 
+## Centring alone is not a principle — a footnote
+
+The reasoning above is "a rotation cannot express a translation", and it is
+sound as far as it goes. What it does not license is the stronger claim that
+centring brings two spaces closer together on its own.
+
+Maystre et al., [*When Embedding Models Meet*](https://arxiv.org/abs/2510.13406),
+give a two-dimensional counter-example (their Appendix B.3): two spaces where
+centring makes the alignment **worse** — `X̃ᵀỸ = 0` after subtracting the means,
+while a suitable orthogonal matrix aligns the originals perfectly. Their
+measured conclusion is that alignment *with* centring is best and centring on
+its own is not principled (their Figure 7).
+
+That is exactly the shape of the decision recorded here: centring is a step
+*inside* a fit for a rotation, never a substitute for one. It also gives the
+three regressions above something to be. All three are `e5→bge`, and a
+systematic loss confined to one model pair is what a counter-example looks like
+when it shows up in practice rather than in two dimensions.
+
+Nothing changes. The default was set on 24 measurements and holds; what changes
+is the claim made for it, which is now the measured one rather than a general
+argument the literature does not support.
+
 ## Alternatives
 
 **Normalisation only, as specified.** Rejected on the measurement.

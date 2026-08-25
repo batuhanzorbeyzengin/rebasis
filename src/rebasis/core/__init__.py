@@ -15,6 +15,7 @@ from __future__ import annotations
 from rebasis.core.base import BaseAdapter, l2_normalize, pad_or_truncate
 from rebasis.core.calibration import ScoreCalibrator
 from rebasis.core.csls import CSLS_NEIGHBOURS, csls_bias, hubness_penalty
+from rebasis.core.geometry import GeometryBound, geometry_bound
 from rebasis.core.identity import IdentityAdapter
 from rebasis.core.linear import LinearAdapter, LowRankAffineAdapter, default_rank
 from rebasis.core.procrustes import CenteredProcrustesAdapter, ProcrustesAdapter
@@ -44,6 +45,7 @@ __all__ = [
     "AdapterManifest",
     "BaseAdapter",
     "CenteredProcrustesAdapter",
+    "GeometryBound",
     "IdentityAdapter",
     "LinearAdapter",
     "LowRankAffineAdapter",
@@ -54,6 +56,7 @@ __all__ = [
     "csls_bias",
     "default_rank",
     "fit_candidates",
+    "geometry_bound",
     "hubness_penalty",
     "l2_normalize",
     "load_adapter",
