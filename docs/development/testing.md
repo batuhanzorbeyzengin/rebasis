@@ -91,3 +91,34 @@ numbers, and a pull request is not expected to.** Everything a review gates on �
 `unit`, `property`, `contract`, `integration`, `e2e` — runs from a clone with no
 container and no service to install. If a change needs a GPU number to justify
 it, say so in the pull request and it will be measured on the host.
+
+## What CI runs, and what it no longer does
+
+One test leg: Ubuntu on the declared floor, 3.12. It was three — two Python
+versions and a macOS runner — and collapsing it was a decision about wall clock
+rather than compute. A hung macOS job held every merge behind it for half an
+hour at a time.
+
+**macOS is not in CI, and the suite still runs there.** It is the maintainer's
+own platform, which is where the storage-layer differences that leg existed for
+— directory fsync, `os.replace`, a system sqlite3 that cannot load extensions —
+actually get exercised. The leg also could not finish: `faiss-cpu` and `torch`
+each link their own OpenMP runtime on macOS and a process holding both aborts
+with `OMP: Error #15` before either library does any work
+([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
+[pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). That is not
+rebasis' bug and there is no fix a caller can apply; the documented workaround
+is itself documented as liable to produce wrong results. `rebasis doctor` reports
+the pair, and the FAISS tests skip themselves under it with the reason attached.
+
+**The newest Python is not tested separately**, because across this
+repository's runs it caught nothing the floor did not. `lowest direct
+dependencies` still pins the floor's dependency versions, and that is the check
+that has actually failed.
+
+Every job carries a `timeout-minutes`. A job that hangs should cost minutes, not
+the six hours a runner will otherwise give it — and `faulthandler_timeout` in
+`pyproject.toml` means a hang names the test it happened in rather than the
+percentage it stopped at.
+
+Bring a leg back when there is a failure it would have caught.
