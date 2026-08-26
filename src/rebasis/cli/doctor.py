@@ -22,6 +22,12 @@ manifest is opened only when this release would not migrate it — migrating is 
 write, and a diagnostic that upgrades a schema behind the user's back has
 altered the thing it was asked to describe.
 
+``--calibrate`` is the one exception, and it is named as one. It times this
+machine and writes ``calibration.json`` into the state directory — never near
+the index, never a store, and only when it is asked for by name. Anything that
+writes should be impossible to trigger by accident from a command whose whole
+promise is that it does not.
+
 **A check that fails does not take the report with it.** A store that will not
 open is the most likely reason someone is running this at all, and the reason it
 would not open is the answer they came for. Every check returns a verdict,
@@ -164,6 +170,16 @@ def doctor_command(
         bool,
         typer.Option("--json", help="Emit the environment as JSON, for bug reports and CI"),
     ] = False,
+    calibrate: Annotated[
+        bool,
+        typer.Option(
+            "--calibrate",
+            help=(
+                "Time this machine and record the result. The only path that "
+                "writes, and it writes only into the state directory"
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Report the environment, devices and configuration.
 
@@ -171,11 +187,18 @@ def doctor_command(
     it does not, what it holds, whether its file is intact, and whether a
     half-finished migration has left it holding two embedding spaces. Every one
     of those reads; none of them writes.
+
+    Pass --calibrate to replace the reference speedups with this machine's. The
+    numbers in `rebasis.compute.thresholds` were measured on one GPU against one
+    CPU, and a faster host narrows every one of them — so the honest thing for a
+    diagnostic to do is measure rather than repeat. It records only what it can
+    time without downloading anything, and says which keys those were.
     """
     report = _inspect_store(store, state_dir) if store is not None else None
+    measured = _run_calibration(state_dir) if calibrate else None
 
     if as_json:
-        _print_json(report)
+        _print_json(report, measured)
         return
 
     from rebasis import __version__
@@ -244,6 +267,10 @@ def doctor_command(
     )
     table.add_row("selected (auto)", assignments)
     table.add_row("hot path", "cpu [dim](always — transfer exceeds the budget)[/dim]")
+    # Off the file rather than off `measured`, so a calibration taken on an
+    # earlier run shows up too. A number measured last week on this machine is
+    # more use than one measured last year on somebody else's.
+    _add_calibration_row(table, state_dir)
 
     table.add_row("", "")
     status, threads = blas_info()
@@ -285,6 +312,9 @@ def doctor_command(
     table.add_row("telemetry", _telemetry_row(telemetry_status()))
 
     console.print(table)
+    if measured is not None:
+        console.print()
+        _print_calibration(measured)
     _print_environment()
     _warn_about_openmp_conflict()
     # Last, and deliberately: the environment is the same on every run, and the
@@ -339,7 +369,214 @@ def _warn_about_openmp_conflict() -> None:
         console.print(f"[yellow]incompatible pair[/yellow]  {conflict}")
 
 
-def _print_json(store: StoreReport | None) -> None:
+# ── local calibration ────────────────────────────────────────────────────────
+#
+# `rebasis.compute.thresholds` records speedups measured on one GPU against one
+# CPU, and says so: a faster host narrows every one of them. These functions
+# measure the machine in front of them instead.
+#
+# Two rules, and they are the same two the rest of the project runs on.
+#
+# **Measured or omitted, never estimated.** `embed` dominates a probe and needs a
+# model, which needs a download; a diagnostic that pulled 400 MB to answer a
+# question nobody asked would be a bad citizen, so it is not measured and not
+# guessed. `worth_accelerating` falls back per key, so an absent one costs
+# nothing.
+#
+# **A failure is a finding, not a crash.** `doctor` is what somebody runs when
+# their environment is already broken. Every measurement is wrapped: one that
+# raises records nothing and the report still prints.
+
+#: kNN benchmark shape. Chosen to be a realistic probe's ground-truth search
+#: rather than a microbenchmark: 20k documents is a small index, 512 queries is
+#: a probe's sample, 768 is the dimensionality of the models the ladder ends on.
+KNN_SHAPE = {"queries": 512, "documents": 20_000, "dim": 768, "k": 10}
+
+#: MLP benchmark shape. `epochs` is far below the 60 a real fit runs, because
+#: what is wanted is the per-epoch ratio and not the wall clock of a fit nobody
+#: asked for. Recorded in `notes` so the number is never read as a fit time.
+MLP_SHAPE = {"pairs": 2000, "dim": 384, "epochs": 3}
+
+#: Timed runs per measurement, after one warm-up. The median is taken: an
+#: accelerator's first call pays for kernel loading and allocation, and a mean
+#: over three would carry a third of that.
+REPEATS = 3
+
+
+def _median_seconds(work: Callable[[], object], *, repeats: int = REPEATS) -> float:
+    """Run ``work`` once to warm up, then ``repeats`` times, and take the median."""
+    import statistics
+    import time
+
+    work()
+    timings = []
+    for _ in range(repeats):
+        started = time.perf_counter()
+        work()
+        timings.append(time.perf_counter() - started)
+    return statistics.median(timings)
+
+
+def _time_knn(device: Any) -> float:
+    """CPU seconds divided by accelerator seconds for a ground-truth kNN.
+
+    The same :func:`~rebasis.compute.search.top_k_search` a probe calls, with
+    the device passed explicitly rather than through the ambient context, so the
+    two arms differ in the device and in nothing else.
+    """
+    import numpy as np
+
+    from rebasis.compute import l2_normalize, top_k_search
+    from rebasis.compute.device import resolve_device
+
+    rng = np.random.default_rng(0)
+    shape = KNN_SHAPE
+    queries = l2_normalize(rng.standard_normal((shape["queries"], shape["dim"])).astype(np.float32))
+    documents = l2_normalize(
+        rng.standard_normal((shape["documents"], shape["dim"])).astype(np.float32)
+    )
+    cpu = resolve_device("cpu")
+
+    on_cpu = _median_seconds(lambda: top_k_search(queries, documents, k=shape["k"], device=cpu))
+    on_device = _median_seconds(
+        lambda: top_k_search(queries, documents, k=shape["k"], device=device)
+    )
+    return on_cpu / on_device if on_device > 0 else 0.0
+
+
+def _time_mlp(device: Any) -> float:
+    """CPU seconds divided by accelerator seconds for the residual MLP's fit."""
+    import numpy as np
+
+    from rebasis.compute import l2_normalize
+    from rebasis.core.residual_mlp import ResidualMLPAdapter
+
+    rng = np.random.default_rng(0)
+    shape = MLP_SHAPE
+    src = l2_normalize(rng.standard_normal((shape["pairs"], shape["dim"])).astype(np.float32))
+    rotation = np.linalg.qr(rng.standard_normal((shape["dim"], shape["dim"])))[0]
+    dst = l2_normalize(src @ rotation.T.astype(np.float32))
+
+    def fit(where: str) -> object:
+        return ResidualMLPAdapter.fit(src, dst, epochs=shape["epochs"], device=where)
+
+    on_cpu = _median_seconds(lambda: fit("cpu"), repeats=1)
+    on_device = _median_seconds(lambda: fit(str(device)), repeats=1)
+    return on_cpu / on_device if on_device > 0 else 0.0
+
+
+def _run_calibration(state_dir: Path | None) -> Any:
+    """Time this machine, write the result, and return it.
+
+    Returns ``None`` when there is no accelerator to compare against — a
+    calibration of a CPU against itself is 1.0 by construction and would
+    overwrite the reference table with an arithmetic identity.
+    """
+    import datetime
+    import socket
+
+    from rebasis.compute import resolve_device, torch_available
+    from rebasis.compute.thresholds import Calibration, calibration_path
+    from rebasis.manifest import default_state_dir
+    from rebasis.storage.atomic import atomic_write_json
+
+    device = resolve_device("auto")
+    if device.is_cpu:
+        console.print(
+            "[yellow]No accelerator to calibrate against.[/yellow] The recorded "
+            "speedups are ratios of CPU time to device time, and there is no "
+            "device here; nothing was written."
+        )
+        return None
+
+    speedups: dict[str, float] = {}
+    notes: dict[str, Any] = {}
+    console.print(f"[dim]timing this machine against {device}...[/dim]")
+
+    measurements: list[tuple[str, Callable[[], float], dict[str, Any]]] = [
+        ("knn", lambda: _time_knn(device), dict(KNN_SHAPE)),
+    ]
+    if torch_available():
+        measurements.append(("fit_mlp", lambda: _time_mlp(device), dict(MLP_SHAPE)))
+
+    for name, measure, shape in measurements:
+        try:
+            speedups[name] = round(measure(), 2)
+        except Exception as exc:  # noqa: BLE001 - a broken environment is the usual caller
+            console.print(f"  [yellow]{name}: not measured — {type(exc).__name__}[/yellow]")
+            continue
+        notes[name] = shape
+
+    if not speedups:
+        console.print("[yellow]Nothing could be measured; nothing was written.[/yellow]")
+        return None
+
+    calibration = Calibration(
+        device=str(device),
+        speedups=speedups,
+        measured_utc=datetime.datetime.now(tz=datetime.UTC).isoformat(),
+        host=socket.gethostname(),
+        notes=notes,
+    )
+    directory = state_dir or default_state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(calibration_path(directory), calibration.to_dict())
+    return calibration
+
+
+def _add_calibration_row(table: Table, state_dir: Path | None) -> None:
+    """Name the calibration this machine already has, if it has one.
+
+    Read off the file rather than off this run's measurement, so a calibration
+    taken on an earlier run shows up too: a number measured last week on this
+    machine is more use than one measured last year on somebody else's.
+    """
+    from rebasis.compute import load_calibration
+    from rebasis.manifest import default_state_dir
+
+    stored = load_calibration(state_dir or default_state_dir())
+    if stored is None:
+        return
+    table.add_row(
+        "calibrated",
+        f"{stored.device} on {stored.host or 'this machine'}, "
+        f"{stored.measured_utc[:10] or 'date not recorded'}",
+    )
+
+
+def _print_calibration(calibration: Any) -> None:
+    """Show what was measured here against what was measured on the reference host."""
+    from rebasis.compute.thresholds import MEASURED_SPEEDUPS, WORTH_IT
+
+    table = Table(title="calibration", box=None)
+    table.add_column("operation", style="dim")
+    table.add_column("here", justify="right")
+    table.add_column("reference", justify="right")
+    table.add_column("")
+    for name in sorted(MEASURED_SPEEDUPS):
+        local = calibration.speedups.get(name)
+        reference = MEASURED_SPEEDUPS[name]
+        if local is None:
+            table.add_row(name, "[dim]not measured[/dim]", f"{reference:.1f}x", "")
+            continue
+        verdict = (
+            "[green]worth the accelerator[/green]"
+            if local >= WORTH_IT
+            else "[yellow]not worth it here[/yellow]"
+        )
+        table.add_row(name, f"{local:.1f}x", f"{reference:.1f}x", verdict)
+    console.print(table)
+    console.print(
+        "[dim]`embed` needs a model, so it is not measured rather than guessed. "
+        "A key with no local number falls back to the reference one.[/dim]"
+    )
+    console.print(
+        "[dim]This is a diagnostic: nothing in the runtime dispatches per "
+        "operation, so it changes what is reported and not where work runs.[/dim]"
+    )
+
+
+def _print_json(store: StoreReport | None, calibration: Any = None) -> None:
     """The same facts, structured.
 
     `doctor` is the command a user is asked to run when they open an issue, and
@@ -391,6 +628,10 @@ def _print_json(store: StoreReport | None) -> None:
     }
     payload["openmp_conflict"] = openmp_conflict() or None
     payload["store"] = store.to_dict() if store is not None else None
+    # `null` without `--calibrate`, and null when there was nothing to measure
+    # against. Present either way, for the same reason `store` is: a script
+    # reading a bug report should not have to know which flags were passed.
+    payload["calibration"] = calibration.to_dict() if calibration is not None else None
     console.print_json(json.dumps(payload, default=str))
 
 

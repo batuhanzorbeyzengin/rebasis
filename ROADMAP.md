@@ -90,9 +90,25 @@ answer, and guessing would be worse than waiting.
     pre-flight plan says so, the shadow manifest records the precision, and
     `rollback` prints it off that file rather than off anyone's memory.
     [The numbers](docs/shadow-precision.md).
-- **Local threshold calibration.** The GPU/CPU decisions in `compute/` come from
-  measurements on two machines. Whether they hold on yours is unknown, and
-  `doctor` should be able to find out rather than assume.
+- ~~**Local threshold calibration.**~~ **Done.** `rebasis doctor --calibrate`
+  times this machine and records the result in `.rebasis/calibration.json` — the
+  one path in `doctor` that writes, and it writes only there. It measures what it
+  can reach without downloading anything (kNN, and the residual MLP's fit where
+  torch is installed) and records **only those**: `embed` needs a model, so it is
+  omitted rather than guessed, which is the same rule energy and the reindex
+  estimate follow.
+
+    Connecting it found `worth_accelerating` promising a per-key fallback its
+    code did not perform — it swapped the whole table for the local one, so a
+    partial calibration would have read an absent `embed` as *not worth
+    accelerating* and moved the dominant cost of a probe back onto the CPU, on a
+    machine that had just been measured and found fast.
+
+    It is a diagnostic and is documented as one. Nothing in the runtime
+    dispatches per operation: a session runs under one ambient device and
+    `top_k_search` consults no size threshold. On the project's own A10G host it
+    reports kNN at 31.4x against the recorded 22x, and the MLP fit at 7.5x
+    against 5.9x.
 - **Access-log-weighted sampling for `probe`.** The sampler supports weights;
   nothing passes them. Weighting the sample by what people actually read would
   make ARR describe the queries that matter, but it also makes the sample

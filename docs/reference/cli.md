@@ -329,7 +329,7 @@ ones. It is where `RB-E2003` sends you.
 ## `rebasis doctor`
 
 ```bash
-rebasis doctor [--store URI] [--json] [--state-dir DIR]
+rebasis doctor [--store URI] [--calibrate] [--json] [--state-dir DIR]
 ```
 
 What rebasis can see: backends, embedders, devices, BLAS threads, log level,
@@ -349,8 +349,21 @@ right, the text is right, the ranking is wrong. It costs one indexed aggregate
 per unfinished job in the local manifest: no store is opened for it, no vector
 is read, nothing goes over a network.
 
-**Read-only in every path, including the local one.** Nothing is opened for
-writing. The manifest is opened only when this release would not migrate its
+`--calibrate` times this machine and writes `.rebasis/calibration.json`. The
+speedups in `rebasis.compute.thresholds` were measured on one GPU against one
+CPU and a faster host narrows every one of them, so a diagnostic that repeated
+them would be repeating somebody else's machine. It measures what it can reach
+without downloading anything — kNN through the same `top_k_search` a probe
+calls, and the residual MLP's fit where torch is installed — and records **only
+those**: `embed` needs a model, so it is omitted rather than guessed.
+
+It is a diagnostic and nothing more. Nothing in the runtime dispatches per
+operation — a session runs under one ambient device and `top_k_search` consults
+no size threshold — so a calibration changes what `doctor` reports about this
+machine, not where work runs.
+
+**Read-only in every path except `--calibrate`, which is named as the
+exception.** Nothing is opened for writing. The manifest is opened only when this release would not migrate its
 schema — `ManifestDB` upgrades on connect and takes a backup on the way, which
 is right for `status` and wrong for a command whose whole promise is that it
 changes nothing. A manifest from an older release is reported rather than
