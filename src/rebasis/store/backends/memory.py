@@ -62,6 +62,12 @@ class MemoryStore:
             can_filter=False,
             dimension_locked=True,
             supports_in_place_update=True,
+            # A float32 numpy array and nothing else: `as_float32` at
+            # construction, an assignment into that array on upsert, and the
+            # same buffer handed back by `iter_records`. There is no encoder
+            # between the write and the read, which is what makes this the
+            # backend every other one is checked against.
+            quantized=False,
             name="memory",
         )
 

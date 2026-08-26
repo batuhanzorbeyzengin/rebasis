@@ -14,10 +14,17 @@ nothing to re-embed and nothing to name in a report. When it is absent, the
 backend still works for `probe` in vector-only mode — row numbers become ids —
 and says so through its capabilities rather than by failing later.
 
-**Reconstruction is required.** rebasis reads vectors back out of the index, and
-a compressed index (IVFPQ, and the like) cannot return what was put in. The
-backend checks for that up front, because the failure mode otherwise is not an
-error: it is quietly measuring against lossy vectors.
+**Reconstruction is required, and it is not the whole story.** rebasis reads
+vectors back out of the index, so an index that cannot reconstruct at all is
+refused up front rather than failing halfway through. That check catches the
+indexes where ``reconstruct`` *raises* — an IVF index with no direct map cannot
+find a vector by id in the first place. It does not catch the ones where it
+succeeds and hands back an approximation: ``IndexPQ`` and
+``IndexScalarQuantizer`` decode their codes and return a vector that is not the
+one that went in. Those are declared instead, through
+``capabilities.quantized``, because they are not a reason to refuse a
+migration — they are a reason for the caller to know what its round trip and its
+rollback are worth.
 
 **Labels are not row numbers.** An ``IndexIDMap2`` addresses vectors by the
 label handed to ``add_with_ids``; a bare index addresses them by row. That
@@ -61,6 +68,15 @@ if TYPE_CHECKING:
 __all__ = ["FaissStore"]
 
 DEFAULT_BATCH = 1000
+
+#: Bytes a float32 vector spends per component. What an index stores per
+#: component is compared against this.
+_FLOAT32_BYTES = 4
+
+#: How many wrappers deep to look for the index that holds the codes. An id map
+#: over a pre-transform over an index is three; the bound is here so that a
+#: malformed index cannot turn a capability check into a loop.
+_MAX_UNWRAP = 8
 
 
 class FaissStore:
@@ -143,6 +159,7 @@ class FaissStore:
             can_filter=False,
             dimension_locked=True,
             supports_in_place_update=True,
+            quantized=_is_quantized(self._index),
             name="faiss",
         )
 
@@ -342,6 +359,89 @@ def _labels_of(index: Any) -> list[int]:
     return [int(label) for label in faiss.vector_to_array(index.id_map)]
 
 
+def _is_quantized(index: Any) -> bool | None:
+    """Whether this index stores fewer bytes per vector than a float32 one would.
+
+    With FAISS the index type *is* the answer, and FAISS will state it in bytes
+    rather than being asked to name itself: ``sa_code_size()`` is the size of
+    one stored code, so ``code_size < 4 × d`` is "this index cannot be holding
+    the float32 vector it was given". ``IndexFlat`` reports exactly ``4 × d``;
+    ``IndexPQ``, ``IndexScalarQuantizer``, ``IndexIVFPQ`` and ``IndexLSH``
+    report a fraction of it. A width beats a list of class names because the
+    list is never finished — ``IndexRaBitQ`` and the additive quantizers were
+    added while this file was being written, and each of them answers correctly
+    without being enumerated.
+
+    Two pieces of plumbing are needed to ask.
+
+    **The index is wrapped.** rebasis needs an ``IndexIDMap2`` to write at all,
+    so what is on disk is a wrapper around the index that holds the codes. In
+    faiss-cpu 1.15 ``IndexIDMap`` forwards ``sa_code_size`` to its sub-index; in
+    1.9 — the declared floor — it does not have the method at all, so the
+    wrapper is peeled explicitly rather than relied on to forward.
+
+    **The sub-index comes back as a base pointer.** ``IndexIDMap.index`` is
+    typed ``Index*``, so SWIG hands back the base proxy. ``sa_code_size()``
+    still dispatches correctly through it because the C++ method is virtual;
+    reaching an *attribute* such as ``IndexHNSW.storage`` does not, which is
+    why ``downcast_index`` is used before looking for one.
+
+    ``None`` where FAISS refuses to say: the base ``Index::sa_code_size`` throws
+    for index types that are not standalone codecs, and a graph index that does
+    not expose its storage leaves the question genuinely open.
+    """
+    return _quantized_by_code_size(_unwrapped(index), int(index.d))
+
+
+def _unwrapped(index: Any) -> Any:
+    """The index behind the id map, downcast to the class that knows its own size."""
+    current = index
+    for _ in range(_MAX_UNWRAP):
+        wrapped = getattr(current, "index", None)
+        if wrapped is None:
+            return current
+        current = _downcast(wrapped)
+    return current
+
+
+def _quantized_by_code_size(index: Any, dimension: int) -> bool | None:
+    """Compare the stored code size against a float32 vector's, following storage."""
+    current = index
+    for _ in range(_MAX_UNWRAP):
+        code_size = _sa_code_size(current)
+        if code_size is not None:
+            return code_size < dimension * _FLOAT32_BYTES
+        # A graph index keeps its vectors in a sub-index; that sub-index is the
+        # thing whose code size answers the question.
+        storage = getattr(_downcast(current), "storage", None)
+        if storage is None:
+            return None
+        current = storage
+    return None
+
+
+def _sa_code_size(index: Any) -> int | None:
+    """Bytes FAISS stores per vector, or ``None`` where it declines to say.
+
+    The base ``Index::sa_code_size`` throws for an index that is not a
+    standalone codec, and a throw here is an unknown rather than an error.
+    """
+    try:
+        return int(index.sa_code_size())
+    except Exception:  # noqa: BLE001 - see the docstring
+        return None
+
+
+def _downcast(index: Any) -> Any:
+    """The most derived proxy FAISS can give for this index, or the index itself."""
+    import faiss
+
+    try:
+        return faiss.downcast_index(index)
+    except Exception:  # noqa: BLE001 - an index FAISS cannot place is left as it is
+        return index
+
+
 def _require_distinct_labels(index: Any, path: Path) -> None:
     """Refuse an index that holds the same label twice.
 
@@ -368,9 +468,13 @@ def _require_distinct_labels(index: Any, path: Path) -> None:
 def _require_reconstruct(index: Any, path: Path) -> None:
     """Refuse an index rebasis cannot read vectors back out of.
 
-    A compressed index returns an approximation of what was stored. Measuring
-    an adapter against approximations would produce a number that looks like an
-    answer and is not, so this fails at second zero instead.
+    Deliberately not the same check as :func:`_is_quantized`, and the pair
+    covers two different failures. This one refuses an index whose
+    ``reconstruct`` *raises*: an IVF index with no direct map has no way to find
+    a vector by id, so there is nothing to measure and nothing to shadow. An
+    index that reconstructs *approximately* passes here and is reported as
+    quantized instead — it can be read, measured and migrated, and what its
+    owner needs is to be told what those numbers are worth, not to be stopped.
     """
     if index.ntotal == 0:
         return

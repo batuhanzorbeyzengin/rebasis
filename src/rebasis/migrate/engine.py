@@ -220,6 +220,14 @@ class MigrationEngine:
                     "adapter_type": self.adapter.type_name,
                     "keep_original": self.keep_original,
                     "batch_size": self.monitor.batch_size,
+                    # What a rollback of this job will be worth, recorded at the
+                    # moment the job is registered rather than left in terminal
+                    # scrollback. `migrate` has no `--json`, so the audit trail
+                    # is where a machine reads this — `rebasis audit show`
+                    # prints the inputs as JSON and `audit export` emits JSONL.
+                    # Three values and they are not two: `true` and `false` are
+                    # findings about the store, `null` is the absence of one.
+                    "store_quantized": self.store.capabilities.quantized,
                 },
                 outputs={"job_id": self.job_id, "state": str(JobState.PENDING)},
                 subject=self.job_id,
@@ -603,6 +611,14 @@ class MigrationEngine:
 
         Bit-identical when the shadow was written at float32, which is the
         default precisely so that rollback is bit-identical.
+
+        Bit-identical *to what was read*, which is the part that stops being a
+        rebasis guarantee on a store that quantizes. The shadow holds what
+        ``iter_records`` returned, and a store that keeps compressed codes
+        returns a value decoded from them; so on such a store this restores the
+        state the migration replaced, not the vectors the embedding model
+        produced. ``StoreCapabilities.quantized`` is which of the two it is, and
+        `migrate` says so before it writes anything.
 
         Raises:
             ShadowMissing: When there is no shadow — the job ran with

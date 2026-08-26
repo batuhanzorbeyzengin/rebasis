@@ -78,6 +78,10 @@ class SqliteVecStore:
         self._text_column = text_column
         self._vector_column = vector_column
         self._dimension: int | None = None
+        # Two attributes rather than one: ``None`` is a real answer here — an
+        # empty table declares nothing to read — and not a "not looked yet".
+        self._quantized: bool | None = None
+        self._quantization_checked = False
 
     @classmethod
     def from_uri(cls, uri: StoreURI, **kwargs: Any) -> SqliteVecStore:
@@ -131,8 +135,45 @@ class SqliteVecStore:
             # constraint rebasis exists to work around.
             dimension_locked=True,
             supports_in_place_update=True,
+            quantized=self._element_type_is_narrow(),
             name="sqlite-vec",
         )
+
+    def _element_type_is_narrow(self) -> bool | None:
+        """Whether this table's vectors are stored as something other than float32.
+
+        A ``vec0`` column is declared with an element type, and the three
+        sqlite-vec offers are not equivalent: ``float``/``f32`` is four bytes
+        per component, ``int8``/``i8`` is one, and ``bit``/``b1`` is one *bit*.
+        The last two are lossy by construction — the extension's own
+        ``vec_quantize_int8`` and ``vec_quantize_binary`` are what produce them.
+
+        Asked with ``vec_type()``, which reports the element type of a stored
+        vector and is present in both sqlite-vec 0.1.6 and 0.1.9 (verified in
+        the shipped ``vec0`` extension's symbol table, along with the three
+        names it returns: ``float32``, ``int8``, ``bit``). The declaration
+        itself is not readable back: a ``vec0`` table declares its virtual
+        schema as ``CREATE TABLE x("id" primary key, rowid, "embedding",
+        distance hidden, k hidden)``, with no type on the vector column, so
+        ``PRAGMA table_info`` has nothing to say.
+
+        An empty table answers ``None``. There is no row to ask about, and
+        "float32" would be a guess dressed as a reading.
+        """
+        if not self._quantization_checked:
+            element = self._element_type()
+            self._quantized = None if element is None else element != "float32"
+            self._quantization_checked = True
+        return self._quantized
+
+    def _element_type(self) -> str | None:
+        column, table = _quote(self._vector_column), _quote(self._vector_table)
+        sql = f"SELECT vec_type({column}) FROM {table} LIMIT 1"  # noqa: S608 - identifiers quoted by _quote
+        try:
+            row = self._connection.execute(sql).fetchone()
+        except sqlite3.Error:
+            return None
+        return None if row is None or row[0] is None else str(row[0])
 
     def count(self) -> int:
         """Number of rows in the vector table."""

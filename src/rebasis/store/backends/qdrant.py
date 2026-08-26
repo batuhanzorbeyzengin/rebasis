@@ -44,6 +44,14 @@ DEFAULT_BATCH = 256
 _ID_KEYS = ("id", "doc_id", "document_id", "chunk_id", "_id")
 _TEXT_KEYS = ("text", "content", "document", "page_content", "chunk")
 
+#: ``VectorParams.datatype`` values that hold fewer than 32 bits per component,
+#: so that a vector written to the collection cannot be read back unchanged.
+#: ``float16`` and ``uint8`` are in the enum from qdrant-client 1.10, the
+#: declared floor; ``turbo4`` — four bits per component — arrived by 1.19.
+#: Compared as strings because the enum is a ``str`` subclass whose members are
+#: exactly these names.
+_NARROW_DATATYPES = frozenset({"float16", "uint8", "turbo4"})
+
 
 class QdrantStore:
     """A Qdrant collection, local or remote."""
@@ -63,6 +71,10 @@ class QdrantStore:
         self._text_key = text_key
         self._vector_name = vector_name
         self._dimension: int | None = None
+        # Two attributes rather than one: ``None`` is a real answer here — the
+        # configuration could not be read — and not a "not looked yet".
+        self._quantized: bool | None = None
+        self._quantization_checked = False
 
     @classmethod
     def from_uri(cls, uri: StoreURI, **kwargs: Any) -> QdrantStore:
@@ -125,8 +137,63 @@ class QdrantStore:
             # The only backend of the five that can. Qdrant documents the move
             # and documents that it costs no downtime.
             can_rebuild_index=True,
+            quantized=self._stores_narrow_vectors(),
             name="qdrant",
         )
+
+    def _stores_narrow_vectors(self) -> bool | None:
+        """Whether this collection stores its vectors as something below float32.
+
+        **Not** ``quantization_config``, and that is the finding rather than an
+        oversight. Qdrant's quantization is a search-time structure built
+        beside the vectors, not instead of them: *"Quantized vectors are stored
+        alongside the original vectors in the collection, so you will still
+        have access to the original vectors if you need them"*
+        (`qdrant.tech/documentation/guides/quantization/`), which is also what
+        makes its own rescoring and oversampling possible at all. A read
+        therefore returns what was written, and reporting a scalar- or
+        binary-quantized collection here would raise an alarm about a round
+        trip that is exact.
+
+        What does move the round trip is ``VectorParams.datatype``, and Qdrant
+        draws the line itself: *"datatypes are distinct from the quantization
+        feature. Quantization creates a separate quantized representation of
+        vectors alongside the original ones, while datatypes determine the
+        representation of the original vectors themselves"*
+        (`qdrant.tech/documentation/concepts/vectors/`). ``float16`` and
+        ``uint8`` are in the enum from qdrant-client 1.10 — the declared floor —
+        and 1.19 adds ``turbo4``.
+
+        Read from the per-vector configuration, which is where the field lives:
+        ``CollectionConfig`` carries a collection-wide ``quantization_config``,
+        but ``datatype`` exists only on ``VectorParams``, so a named-vector
+        collection answers per name and the vector this store was pointed at is
+        the one that matters.
+
+        One limit, stated rather than papered over: against Qdrant's embedded
+        local mode this reads a declaration and not a storage format.
+        ``QdrantLocal`` keeps every vector in a float32 numpy array and reports
+        ``quantization_config=None`` unconditionally
+        (``qdrant_client/local/local_collection.py``, 1.19.0), so a locally
+        emulated collection created with a narrow ``datatype`` will be reported
+        as narrow while round-tripping exactly.
+        """
+        if not self._quantization_checked:
+            self._quantized = self._datatype_is_narrow()
+            self._quantization_checked = True
+        return self._quantized
+
+    def _datatype_is_narrow(self) -> bool | None:
+        """Ask the collection configuration; ``None`` when it cannot be reached."""
+        try:
+            params = self._client.get_collection(self._collection).config.params
+        except Exception:  # noqa: BLE001 - a configuration that cannot be read is an unknown
+            return None
+        resolved, datatype = _datatype_from(params, self._vector_name)
+        if not resolved:
+            return None
+        # Absent means Qdrant's own default, which is float32.
+        return str(getattr(datatype, "value", datatype)) in _NARROW_DATATYPES
 
     def count(self) -> int:
         """Number of points in the collection."""
@@ -452,6 +519,26 @@ def _dimension_from(params: Any, vector_name: str | None) -> int:
             context={"store_backend": "qdrant"},
         )
     return int(vectors.size)
+
+
+def _datatype_from(params: Any, vector_name: str | None) -> tuple[bool, Any]:
+    """The storage datatype of the vector this store reads, if it can be named.
+
+    Returns ``(False, None)`` where the question has no single answer rather
+    than picking one: a collection with several named vectors and none chosen is
+    the case ``dimension()`` already refuses, and answering about the wrong
+    vector is worse than not answering.
+    """
+    vectors = getattr(params, "vectors", None)
+    if vectors is None:
+        return False, None
+    if not isinstance(vectors, dict):
+        return True, getattr(vectors, "datatype", None)
+    if vector_name is not None and vector_name in vectors:
+        return True, getattr(vectors[vector_name], "datatype", None)
+    if len(vectors) == 1:
+        return True, getattr(next(iter(vectors.values())), "datatype", None)
+    return False, None
 
 
 def _vector_of(point: Any, vector_name: str | None) -> FloatArray | None:
