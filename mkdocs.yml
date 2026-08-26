@@ -131,6 +131,7 @@ nav:
       - What a completed migration is worth: migration-band.md
       - Refitting during a migration: continuous-refit.md
       - What a float16 shadow gives up: shadow-precision.md
+      - Chaining adapters: chained-adapters.md
       - Against a published result: vs-drift-adapter.md
   - Development:
       - Setup: development/setup.md

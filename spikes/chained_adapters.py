@@ -62,6 +62,14 @@ FIT_PAIRS = 4000
 #: One family in every link, so a difference between a chain and a direct fit is
 #: the composition rather than the family. The measured default and `auto`'s
 #: usual winner.
+#:
+#: ``--method`` exists to settle one question the grid raised rather than to
+#: offer a knob. `procrustes_centered` subtracts a mean before it rotates, so a
+#: two-link chain of it is *two* centrings — a strictly richer function than the
+#: single centred rotation a direct fit produces, and a candidate explanation
+#: for the one span where the chain came out ahead. Plain `procrustes` has no
+#: centring step, so a chain of it is one rotation exactly like the direct fit,
+#: which makes the pair of runs a test of that explanation.
 METHOD = "procrustes_centered"
 
 
@@ -72,13 +80,13 @@ def band() -> Any:
     return bridge_band
 
 
-def _fit(src: FloatArray, dst: FloatArray) -> BaseAdapter:
+def _fit(src: FloatArray, dst: FloatArray, method: str) -> BaseAdapter:
     """One adapter, through the same call the CLI makes."""
     from rebasis.core import fit_candidates
 
-    candidates = fit_candidates(src, dst, normalize=False, methods=[METHOD])
+    candidates = fit_candidates(src, dst, normalize=False, methods=[method])
     if not candidates:
-        msg = f"{METHOD} could not be fitted on {src.shape[0]} pairs"
+        msg = f"{method} could not be fitted on {src.shape[0]} pairs"
         raise RuntimeError(msg)
     return candidates[0].adapter
 
@@ -121,6 +129,7 @@ def measure_span(
     *,
     k: int,
     seed: int,
+    method: str,
 ) -> dict[str, Any]:
     """One span of the ladder: the direct fit against the chain over it.
 
@@ -146,17 +155,17 @@ def measure_span(
     # is applied newest-first, so a v3 query walks back to v1 one rung at a
     # time.
     query_links = [
-        _fit(encodings[later].documents[rows], encodings[earlier].documents[rows])
+        _fit(encodings[later].documents[rows], encodings[earlier].documents[rows], method)
         for earlier, later in itertools.pairwise(span)
     ]
-    query_direct = _fit(new.documents[rows], old.documents[rows])
+    query_direct = _fit(new.documents[rows], old.documents[rows], method)
 
     # ── the document direction: what `migrate` would write ────────────────
     document_links = [
-        _fit(encodings[earlier].documents[rows], encodings[later].documents[rows])
+        _fit(encodings[earlier].documents[rows], encodings[later].documents[rows], method)
         for earlier, later in itertools.pairwise(span)
     ]
-    document_direct = _fit(old.documents[rows], new.documents[rows])
+    document_direct = _fit(old.documents[rows], new.documents[rows], method)
 
     scores = {
         "query_direct": _recall(
@@ -186,7 +195,7 @@ def measure_span(
         "n_queries": len(corpus.query_ids),
         "n_fit_pairs": int(rows.size),
         "k": k,
-        "method": METHOD,
+        "method": method,
         "scores": {name: round(value, 4) for name, value in scores.items()},
         "query_cost": round(scores["query_chained"] - scores["query_direct"], 4),
         "document_cost": round(scores["document_chained"] - scores["document_direct"], 4),
@@ -203,12 +212,12 @@ def spans() -> list[tuple[str, ...]]:
     return found
 
 
-def already_done(out: Path) -> set[tuple[str, str]]:
+def already_done(out: Path) -> set[tuple[str, str, str]]:
     """Keys already in the output, so a re-run resumes instead of repeating."""
     if not out.exists():
         return set()
     return {
-        (row["corpus"], "->".join(row["span"]))
+        (row["corpus"], "->".join(row["span"]), row.get("method", METHOD))
         for row in (
             json.loads(line)
             for line in out.read_text(encoding="utf-8").splitlines()
@@ -222,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     b = band()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", action="append", default=None)
+    parser.add_argument("--method", default=METHOD, help="Adapter family for every link")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--out", type=Path, default=Path("reports/chain/rows.jsonl"))
     parser.add_argument("--cache-dir", type=Path, default=Path.home() / "band-cache")
@@ -237,7 +247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for dataset in datasets:
         corpus = b.load_corpus(dataset)
         print(f"\n{dataset}\n  {len(corpus.doc_ids):,} documents", flush=True)
-        wanted = [span for span in spans() if (corpus.name, "->".join(span)) not in done]
+        wanted = [
+            span for span in spans() if (corpus.name, "->".join(span), args.method) not in done
+        ]
         if not wanted:
             print("  (done)", flush=True)
             continue
@@ -253,7 +265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         for span in wanted:
             started = time.perf_counter()
-            row = measure_span(corpus, encodings, span, k=args.k, seed=args.seed)
+            row = measure_span(
+                corpus, encodings, span, k=args.k, seed=args.seed, method=args.method
+            )
             row["duration_seconds"] = round(time.perf_counter() - started, 1)
             with args.out.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row) + "\n")
