@@ -11,6 +11,19 @@ host. Nightly it warns; before a release it blocks.
 
 Wall clock never blocks a PR. These numbers exist as a time series, and
 the PR gate is the instruction-count benchmark instead.
+
+**Marked `perf` as well as `slow`, and that second marker is what makes the
+sentence above true.** `slow` alone did not: CI runs `-m "not network and not
+perf"`, so a `slow`-only file was on the merge path, and `ci.yml`'s own comment
+gives the reason it should not have been — "the perf layer asserts timing, and a
+shared runner cannot measure timing … noise wearing a red X". That reasoning is
+about what a test measures, not about which marker it happens to carry, and it
+applies here exactly. Observed: under a loaded host the MLP fit blew a 180-second
+budget it clears in **17 seconds** when measured alone, a 10x swing with nothing
+in the code changed. `slow` still keeps it out of the default developer run;
+`perf` keeps it off the merge path; `scripts/remote.sh test` runs `-m "not
+network"` and so still runs it on the host, which is where its numbers mean
+something.
 """
 
 from __future__ import annotations
@@ -26,7 +39,7 @@ import pytest
 from rebasis.core import fit_candidates, l2_normalize
 from rebasis.types import EncodingProfile
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.perf]
 
 #: The gate sits at 120% of the stated budget.
 GATE = 1.20
