@@ -53,6 +53,7 @@ from rebasis.migrate.queue import (
     pause_requested,
     set_job_state,
 )
+from rebasis.migrate.refit import RefitPolicy, consider_refit
 from rebasis.migrate.states import ItemState, JobState
 from rebasis.observability import (
     Events,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     from rebasis.manifest import ManifestDB
     from rebasis.migrate.queue import QueueStats
     from rebasis.store.base import VectorStore
+    from rebasis.types import Embedder, EncodingProfile
 
 __all__ = ["VERIFY_FRACTION", "MigrationEngine", "MigrationResult"]
 
@@ -143,6 +145,10 @@ class MigrationEngine:
         audit: AuditWriter | None = None,
         store_uri: str = "",
         adapter_path: str = "",
+        refit: RefitPolicy | None = None,
+        embedder: Embedder | None = None,
+        adapter_root: Path | None = None,
+        profiles: tuple[EncodingProfile, EncodingProfile] | None = None,
     ) -> None:
         self.db = db
         self.store = store
@@ -170,6 +176,15 @@ class MigrationEngine:
             dim=adapter.output_dim,
             initial_batch=batch_size,
         )
+        # Refitting needs four things the rest of a migration does not: a policy
+        # saying when, an embedder to make real pairs with, somewhere to write
+        # the adapter it adopts, and the two profiles that adapter records. Any
+        # of them missing means no refit; `_refit_is_possible` says which.
+        self.refit = refit or RefitPolicy()
+        self.embedder = embedder
+        self.adapter_root = adapter_root
+        self.profiles = profiles
+        self._refits = 0
 
     def prepare(
         self,
@@ -290,6 +305,8 @@ class MigrationEngine:
         failed = 0
         batch_index = 0
         pause_reason = ""
+        last_refit_at = 0
+        self._settle_refit()
 
         while True:
             if limit is not None and processed >= limit:
@@ -327,17 +344,15 @@ class MigrationEngine:
                 state=str(JobState.RUNNING),
             )
 
-            should_pause, reason = self.monitor.check()
-            if should_pause:
-                pause_reason = reason
+            # After the batch, never inside one. A refit swaps the adapter, and
+            # swapping it half-way through a batch would leave that batch mapped
+            # two ways with nothing recording where the seam is. On a boundary
+            # the seam is the batch index, which the log already carries.
+            last_refit_at = self._refit_if_due(processed, last_refit_at)
+
+            pause_reason = self._pressure(batch_index)
+            if pause_reason:
                 break
-            if reason:
-                log.warning(
-                    Events.MIGRATE_BATCH_THROTTLED,
-                    job_id=self.job_id,
-                    batch_index=batch_index,
-                    peak_rss_bytes=self.monitor.peak_rss,
-                )
 
         duration = time.perf_counter() - started
         state = self._finish(pause_reason, duration, processed)
@@ -545,6 +560,226 @@ class MigrationEngine:
                 subject=self.job_id,
             )
         return len(expected)
+
+    def _pressure(self, batch_index: int) -> str:
+        """Why the monitor says to stop after this batch, or ``""``.
+
+        The monitor answers two questions in one call — stop, and throttle — and
+        only the first ends the run. A throttle is logged and the loop carries
+        on with a smaller batch.
+        """
+        should_pause, reason = self.monitor.check()
+        if should_pause:
+            return reason
+        if reason:
+            log.warning(
+                Events.MIGRATE_BATCH_THROTTLED,
+                job_id=self.job_id,
+                batch_index=batch_index,
+                peak_rss_bytes=self.monitor.peak_rss,
+            )
+        return ""
+
+    # ── continuous refit ──────────────────────────────────────────────
+
+    def _refit_if_due(self, processed: int, last_refit_at: int) -> int:
+        """Attempt a refit if enough has been migrated, and say when it last ran."""
+        if not self.refit.due(processed, last_refit_at):
+            return last_refit_at
+        self._attempt_refit()
+        return processed
+
+    def _refit_is_possible(self) -> str:
+        """Why a refit cannot be attempted, or ``""`` when it can.
+
+        Checked once, before the first attempt, so a job configured for a refit
+        it can never perform says so at the start rather than at the first
+        checkpoint an hour in.
+        """
+        if not self.refit.enabled:
+            return "refitting is off"
+        if self.embedder is None:
+            return "no embedder was given, and every real pair costs a document re-embedded"
+        if self.adapter_root is None or self.profiles is None:
+            return "there is nowhere to write an adopted adapter, so a resume would lose it"
+        if not self.store.capabilities.can_read_text:
+            return f"{self.store.capabilities.name} does not return document text"
+        return ""
+
+    def _settle_refit(self) -> None:
+        """Turn refitting off, once and loudly, when it cannot be done.
+
+        At the start of the run rather than at the first checkpoint: a job
+        configured to refit and unable to should not discover that an hour in,
+        by which point the alternative — restart with an embedder — costs
+        everything already migrated.
+        """
+        if not self.refit.enabled:
+            return
+        blocked = self._refit_is_possible()
+        if not blocked:
+            return
+        log.warning(
+            Events.MIGRATE_ADAPTER_REFITTED,
+            job_id=self.job_id,
+            adapter_type=self.adapter.type_name,
+            error_code="refit_unavailable",
+        )
+        self._audit_refit(adopted=False, reason=blocked, scores=(0.0, 0.0), pairs=0)
+        self.refit.enabled = False
+
+    def _accumulate_pairs(self) -> tuple[FloatArray, FloatArray, int]:
+        """Draw pairs from what is left to migrate, and re-embed them.
+
+        Source vectors come from the store rather than from the shadow, because
+        these records have not been migrated yet: what the index holds for them
+        *is* the old model's vector. Target vectors are computed here — there is
+        no other way to get one, since a migrated record carries the adapter's
+        own image rather than the new model's output.
+
+        Returns the pairs and how many records were sampled to get them, so a
+        store that returns text for only some of them can be reported rather
+        than silently producing a small fit.
+        """
+        if self.embedder is None:  # pragma: no cover - `_refit_is_possible` guards it
+            msg = "a refit was attempted with no embedder"
+            raise RuntimeError(msg)
+        ids = self.queue.sample_pending(self.refit.sample_size, self._rng)
+        if not ids:
+            return np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32), 0
+
+        usable = [
+            (record.vector, record.text)
+            for record in self.store.iter_records(ids, with_vectors=True, with_text=True)
+            if record.vector is not None and record.text
+        ]
+        if not usable:
+            return np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32), len(ids)
+
+        source = l2_normalize(np.vstack([vector for vector, _ in usable]))
+        target = l2_normalize(self.embedder.encode([text for _, text in usable], kind="document"))
+        return source, target, len(ids)
+
+    def _attempt_refit(self) -> None:
+        """Refit on the accumulated pairs and adopt the result if it wins.
+
+        Never fatal. A refit is an optimisation on top of a migration, and a
+        migration that stopped because an optional improvement could not be
+        computed would be worse than one that carried on with the adapter it
+        already had.
+        """
+        self._refits += 1
+        try:
+            source, target, sampled = self._accumulate_pairs()
+        except Exception as exc:  # noqa: BLE001 - an optional step must not end the job
+            log.warning(
+                Events.MIGRATE_ADAPTER_REFITTED,
+                job_id=self.job_id,
+                adapter_type=self.adapter.type_name,
+                error_code=type(exc).__name__,
+            )
+            return
+
+        if source.shape[0] < self.refit.min_pairs:
+            log.info(
+                Events.MIGRATE_ADAPTER_REFITTED,
+                job_id=self.job_id,
+                adapter_type=self.adapter.type_name,
+                count=int(source.shape[0]),
+            )
+            self._audit_refit(
+                adopted=False,
+                reason=(
+                    f"{source.shape[0]} usable pairs from {sampled} sampled records, "
+                    f"below the {self.refit.min_pairs} a refit needs"
+                ),
+                scores=(0.0, 0.0),
+                pairs=int(source.shape[0]),
+            )
+            return
+
+        decision = consider_refit(
+            self.adapter, src=source, dst=target, policy=self.refit, job_id=self.job_id
+        )
+        if not decision.adopted or decision.adapter is None:
+            self._audit_refit(
+                adopted=False,
+                reason=decision.reason,
+                scores=(decision.current_score, decision.candidate_score),
+                pairs=decision.n_pairs,
+            )
+            return
+
+        self.adapter = decision.adapter
+        self._persist_adapter(decision.adapter)
+        self._audit_refit(
+            adopted=True,
+            reason=decision.reason,
+            scores=(decision.current_score, decision.candidate_score),
+            pairs=decision.n_pairs,
+        )
+
+    def _persist_adapter(self, adapter: BaseAdapter) -> None:
+        """Write the adopted adapter and point the job at it.
+
+        Without this a `--resume` would reload the file `migrate` was started
+        with and silently give back whatever the refit gained — which on a
+        corpus that drifted is the largest single number this feature produces.
+        The job row is what `--resume` reads, so updating it is what makes the
+        adoption survive the process.
+        """
+        if self.adapter_root is None or self.profiles is None:  # pragma: no cover - guarded
+            msg = "a refit was adopted with nowhere to write it"
+            raise RuntimeError(msg)
+        from rebasis.core.serialization import save_adapter
+
+        old_profile, new_profile = self.profiles
+        path = self.adapter_root / f"{self.job_id}-refit-{self._refits}.rbs"
+        save_adapter(
+            adapter,
+            path,
+            direction="old_to_new",
+            old_profile=old_profile,
+            new_profile=new_profile,
+        )
+        self.adapter_path = str(path)
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE jobs SET adapter_path = ?, adapter_type = ?, updated_utc = ? "
+                "WHERE job_id = ?",
+                (self.adapter_path, adapter.type_name, _now(), self.job_id),
+            )
+
+    def _audit_refit(
+        self, *, adopted: bool, reason: str, scores: tuple[float, float], pairs: int
+    ) -> None:
+        """Record the attempt, adopted or not.
+
+        Both outcomes, because "the refit was considered and declined" is the
+        answer to "why did this job not improve", and an audit trail that only
+        recorded successes could not give it.
+        """
+        if self.audit is None:
+            return
+        current, candidate = scores
+        self.audit.write(
+            Events.MIGRATE_ADAPTER_REFITTED,
+            inputs={
+                "job_id": self.job_id,
+                "attempt": self._refits,
+                "count": pairs,
+                "min_improvement": self.refit.min_improvement,
+            },
+            outputs={
+                "job_id": self.job_id,
+                "adopted": adopted,
+                "reason": reason,
+                "current_score": round(current, 4),
+                "candidate_score": round(candidate, 4),
+                "adapter_path": self.adapter_path if adopted else "",
+            },
+            subject=self.job_id,
+        )
 
     def _reason_to_stop(self) -> str:
         """Why this run should stop before starting another batch, or ``""``.

@@ -1,12 +1,9 @@
 """Continuous re-fitting during a long migration.
 
-A migration can run for hours. Over that time the *pairs available to fit on*
-change: records already migrated carry new-model vectors, so a growing, better
-sample of matched pairs becomes available for free.
-
-The reference work calls this continuous adaptation. The idea is simple:
-periodically refit on the accumulated pairs, and adopt the new adapter
-**only if it measurably beats the one in use on a held-out set**.
+A migration can run for hours, and over that time the index it is rewriting may
+stop looking like the index the adapter was fitted on. Periodically refit on
+pairs drawn from what is *left*, and adopt the new adapter **only if it
+measurably beats the one in use on a held-out set**.
 
 Two guards make this safe rather than merely clever:
 
@@ -17,11 +14,48 @@ Two guards make this safe rather than merely clever:
   because a job that finishes having used two different adapters is a job whose
   results need that fact recorded.
 
-A caveat worth stating: pairs accumulated during a migration come from records
-processed in **priority order**, not at random. With ``--priority access`` those
-are the frequently-read records, which are not a uniform sample of the corpus. So
-the refit is evaluated on a held-out set drawn the same way, and the improvement
-threshold is deliberately not tiny.
+## What this is for, measured
+
+An earlier version of this docstring said pairs become available "for free"
+during a migration, because records already migrated carry new-model vectors.
+**They do not.** A migrated record carries ``A(old)`` — the adapter's own image
+of the old vector — so fitting on those pairs fits ``A`` to reproduce ``A``.
+Every real pair costs a document re-embedded, which is why the engine needs an
+embedder to do this at all.
+
+Once it is being paid for, `spikes/continuous_refit.py` says what it buys, over
+216 cells on real corpora:
+
+* On a corpus that has not changed, a refit is a **pair-count** effect and
+  nothing more. Against `rebasis fit`'s default 4,000-pair budget, even 12,000
+  pairs moves retention a median +0.0075 and clears the 0.01 threshold below in
+  17% of cells. Where the pairs came from does not matter: ``remaining`` against
+  ``migrated`` at equal K is -0.002, which is noise.
+* On a corpus that **grew into a domain the adapter never saw**, refitting on
+  1,000 pairs drawn from what is left is worth a median **+0.16** and wins in
+  12 of 12 cells. Held at equal pair count, drawing from the remainder rather
+  than from the migrated half is worth **+0.20**, at every budget tested.
+
+So the sample source is the whole design, and it is the opposite of what the
+"for free" premise implied: fit on the records **not yet migrated**, because
+those are the ones the refitted adapter is about to be applied to. Carrying the
+original pairs alongside them makes it *worse* in the case that matters (+0.209
+against +0.191 at 8,000 pairs), because they pull the map back toward a domain
+that is no longer what is being written.
+
+The guard is what keeps both readings true at once. On an unchanged corpus a
+1,000-pair refit loses to a 4,000-pair adapter and is declined; on a drifted one
+it wins by an order of magnitude more than the threshold and is adopted.
+
+**This is not the "continuous adaptation" of arXiv:2509.23471 §5.6**, and the
+difference is worth stating because the names collide. There, a fixed adapter
+degrades from 0.95 to about 0.83 over 24 hours because it maps *queries into the
+old space* while the index fills with items "now purely in the f_new space" —
+refitting chases a target that is moving underneath it. rebasis serves that same
+index with two-space search (:mod:`rebasis.serve.mixed`) instead, which is a
+structural answer rather than a moving one. What is left of the scenario once
+that is removed is the corpus changing in kind, which is what the numbers above
+measure.
 """
 
 from __future__ import annotations
@@ -55,10 +89,15 @@ MIN_PAIRS = 1000
 
 @dataclass(slots=True)
 class RefitPolicy:
-    """When to consider refitting."""
+    """When to consider refitting, and how much to spend finding out."""
 
     enabled: bool = False
     every_n_records: int = 50_000
+    #: Records sampled from the queue and re-embedded per attempt. Distinct from
+    #: ``min_pairs``, which is the floor below which the attempt is abandoned: a
+    #: store where some records carry no text returns fewer usable pairs than
+    #: were asked for, and the two numbers answer different questions.
+    sample_size: int = MIN_PAIRS
     min_pairs: int = MIN_PAIRS
     min_improvement: float = MIN_IMPROVEMENT
     holdout_fraction: float = 0.2
@@ -97,10 +136,15 @@ def consider_refit(
 
     Args:
         current: The adapter in use.
-        src: New-model vectors of the accumulated pairs.
-        dst: Old-model vectors of the same records, in the same order.
+        src: Source-space vectors of the accumulated pairs — for the direction
+            `migrate` uses, the old-model vectors the index still holds.
+        dst: Target-space vectors of the same records, in the same order.
         policy: When and by how much to switch.
         job_id: For the log and audit record.
+
+    Direction-neutral by construction: it fits ``src -> dst`` and scores the
+    result against ``dst``, so it serves whichever direction the caller is
+    migrating in. `migrate` passes ``old -> new``; nothing here assumes it.
 
     The comparison is on a **held-out** slice of the accumulated pairs. Scoring
     both adapters on the data the candidate was fitted to would favour it

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from rebasis.manifest import JobRow
     from rebasis.migrate.engine import MigrationEngine, MigrationResult
     from rebasis.store.base import VectorStore
+    from rebasis.types import Embedder, EncodingProfile
 
 __all__ = [
     "gc_command",
@@ -105,6 +106,25 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             ),
         ),
     ] = False,
+    refit: Annotated[
+        bool,
+        typer.Option(
+            "--refit",
+            help=(
+                "Periodically refit the adapter on records not yet migrated, "
+                "adopting the result only if it wins. Re-embeds documents"
+            ),
+        ),
+    ] = False,
+    refit_every: Annotated[
+        int, typer.Option("--refit-every", help="Records between refit attempts")
+    ] = 50_000,
+    refit_pairs: Annotated[
+        int, typer.Option("--refit-pairs", help="Records sampled and re-embedded per attempt")
+    ] = 1000,
+    device: Annotated[
+        str, typer.Option("--device", help="Where to run the embedder --refit needs")
+    ] = "auto",
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", "-n", help="Show the plan and stop, writing nothing"),
@@ -127,7 +147,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     from rebasis.core import load_adapter
     from rebasis.errors import ConfigError
     from rebasis.manifest import ADAPTERS_DIR, SHADOW_DIR, default_state_dir
-    from rebasis.migrate import MigrationEngine
+    from rebasis.migrate import MigrationEngine, RefitPolicy
     from rebasis.storage import state_lock
     from rebasis.storage.budget import enforce_budget, estimate_budget
     from rebasis.store.base import require_capability
@@ -162,6 +182,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     # The lock is what keeps two of these out of one manifest.
     with state_lock(directory, operation="migrate"):
         writer = audit_writer_for(directory)
+        embedder, profiles = _refit_collaborators(manifest, opened, enabled=refit, device=device)
         engine = MigrationEngine(
             db=writer.db,
             store=opened,
@@ -175,6 +196,14 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             audit=writer,
             store_uri=store,
             adapter_path=str(adapter),
+            refit=RefitPolicy(
+                enabled=refit,
+                every_n_records=refit_every,
+                sample_size=refit_pairs,
+            ),
+            embedder=embedder,
+            adapter_root=directory / ADAPTERS_DIR,
+            profiles=profiles,
         )
 
         if not keep_original:
@@ -613,6 +642,67 @@ def _resume_defaults(
             context={"job_id": job_id},
         )
     return recovered_adapter, recovered_store
+
+
+def _refit_collaborators(
+    manifest: AdapterManifest,
+    store: VectorStore,
+    *,
+    enabled: bool,
+    device: str,
+) -> tuple[Embedder | None, tuple[EncodingProfile, EncodingProfile] | None]:
+    """The embedder and profiles ``--refit`` needs, or ``(None, None)``.
+
+    `migrate` normally opens no model at all — it applies a matrix to vectors it
+    reads. A refit has to produce *real* target vectors, because a migrated
+    record carries the adapter's own image rather than the new model's output,
+    so it needs the new model. Which model that is comes off the adapter's
+    manifest rather than off a flag: the adapter records what it was fitted
+    against, and asking the user to retype it is asking them to get it wrong.
+
+    Both profiles are resolved because an adopted adapter is written back as a
+    `.rbs`, and a `.rbs` records the profiles it maps between. The **old** one
+    is resolved rather than opened — nothing here runs the old model — with the
+    index's own dimension as the fallback, which is the same arrangement
+    `open_embedders` uses and for the same reason: the index is authoritative
+    about the model it was built with.
+
+    Raises:
+        ConfigError: When the opened model's profile is not the one the adapter
+            was fitted against. A refit under a different prefix scheme would
+            produce pairs the adapter never saw and adopt a map fitted to them.
+    """
+    if not enabled:
+        return None, None
+
+    from rebasis.cli._profiles import resolve_profile
+    from rebasis.embed import open_embedder
+    from rebasis.errors import ConfigError
+
+    new_profile = resolve_profile(manifest.new_model_id, None)
+    embedder = open_embedder(
+        manifest.new_model_id,
+        device=None if device == "auto" else device,
+        profile=new_profile,
+    )
+    fingerprint = embedder.profile.fingerprint()
+    if fingerprint != manifest.new_profile_fingerprint:
+        raise ConfigError(
+            f"{manifest.new_model_id} encodes differently now than when the adapter "
+            "was fitted, so a refit would fit against pairs the adapter never saw.",
+            hint=(
+                "Drop --refit, or re-fit the adapter with `rebasis fit "
+                "--direction old_to_new` against the current profile."
+            ),
+            context={
+                "model_id": manifest.new_model_id,
+                "expected": manifest.new_profile_fingerprint,
+                "actual": fingerprint,
+            },
+        )
+
+    old_profile = resolve_profile(manifest.old_model_id, None, fallback_dim=store.dimension())
+    return embedder, (old_profile, embedder.profile)
 
 
 def _check_direction(manifest: AdapterManifest, adapter_path: Path) -> None:

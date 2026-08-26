@@ -174,6 +174,10 @@ rebasis is not part of, and try `--limit` on a slice first. See
 | `--resume` | — | Continue an existing job id. Recovers `--adapter` and `--store` from the job. `rebasis resume JOB_ID` is the same thing under the verb that pairs with `pause` |
 | `--health-check/--no-health-check` | on | Measure what the index's own search returns against exact kNN, before and after |
 | `--rebuild-index` | off | When the run finishes, ask the store to rebuild its search structure |
+| `--refit` | off | Refit the adapter part-way through, on records not yet migrated, adopting only a winner. Opens the new model recorded in the adapter's manifest and re-embeds documents |
+| `--refit-every` | 50000 | Records between refit attempts |
+| `--refit-pairs` | 1000 | Records sampled and re-embedded per attempt |
+| `--device` | auto | Where to run the embedder `--refit` needs |
 | `--dry-run`, `-n` | off | Print the plan and stop |
 | `--state-dir` | `./.rebasis` | Where the job state, shadow copies and audit trail live |
 | `--yes`, `-y` | | Skip the confirmation |
@@ -193,6 +197,16 @@ the shadow copy is what makes the job reversible.
 `rollback` and `gc --apply` take the same lock. `gc`'s dry run does not: "what
 would you delete?" is a read, and making it wait behind a running migration would
 be a worse answer than showing it.
+
+**`--refit` is for one situation and declines the rest.** It samples records that
+have **not** been migrated yet, re-embeds them with the new model, refits on
+those pairs alone, and adopts the result only if it beats the adapter in use by
+0.01 on a held-out slice. Measured over 216 cells: on a corpus that has not
+changed nothing clears that threshold, and on an index that grew into a domain
+the adapter never saw, 1,000 pairs drawn from what is left are worth a median
++0.16 nDCG and beat 8,000 pairs from the migrated half by +0.20. An adopted
+adapter is written to the state directory and the job points at it, so `resume`
+keeps it. [The numbers](../continuous-refit.md).
 
 **Two things `migrate` reports that nothing else can see.**
 

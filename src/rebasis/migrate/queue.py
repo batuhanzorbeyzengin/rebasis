@@ -23,6 +23,8 @@ from rebasis.migrate.states import ItemState, JobState
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
+    import numpy as np
+
     from rebasis.manifest import ManifestDB
 
 __all__ = ["JobQueue", "QueueStats", "clear_pause_request", "pause_requested", "request_pause"]
@@ -162,6 +164,56 @@ class JobQueue:
                 ORDER BY record_id LIMIT ? OFFSET ?
                 """,
                 (self.job_id, ItemState.DONE, batch_size, offset),
+            )
+            if not rows:
+                return
+            yield [str(row["record_id"]) for row in rows]
+            offset += len(rows)
+
+    def sample_pending(self, size: int, rng: np.random.Generator) -> list[str]:
+        """A uniform sample of the records still to be migrated.
+
+        Uniform over what is *left*, not over the queue's head. A refit fitted
+        on the highest-priority records still pending would be fitted on a
+        slice of a slice — and what it is about to be applied to is the whole
+        remainder.
+
+        Reservoir sampling over a streamed scan rather than ``ORDER BY
+        RANDOM()``: SQLite's ``RANDOM()`` cannot be seeded, and a migration that
+        made a different decision on a re-run of the same job would not be
+        reproducible from the audit trail. One pass of record ids, and only when
+        a refit is due — every 50,000 records by default, against a scan of a
+        column that is already indexed.
+        """
+        reservoir: list[str] = []
+        seen = 0
+        for chunk in self._iter_pending():
+            for record_id in chunk:
+                if len(reservoir) < size:
+                    reservoir.append(record_id)
+                else:
+                    position = int(rng.integers(0, seen + 1))
+                    if position < size:
+                        reservoir[position] = record_id
+                seen += 1
+        return reservoir
+
+    def _iter_pending(self, batch_size: int = 1000) -> Iterator[list[str]]:
+        """Stream the records still to be migrated, in a stable order.
+
+        ``SHADOWED`` counts as pending for the same reason ``next_batch`` takes
+        it: a record whose original was copied but whose write never landed is
+        still carrying its old vector.
+        """
+        offset = 0
+        while True:
+            rows = self.db.query(
+                """
+                SELECT record_id FROM job_items
+                WHERE job_id = ? AND state IN (?, ?)
+                ORDER BY record_id LIMIT ? OFFSET ?
+                """,
+                (self.job_id, ItemState.PENDING, ItemState.SHADOWED, batch_size, offset),
             )
             if not rows:
                 return

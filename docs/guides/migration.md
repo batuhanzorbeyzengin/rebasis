@@ -109,6 +109,7 @@ Useful flags:
 | `--max-memory 2GB` | A ceiling. The batch size is computed from it — you should not have to. |
 | `--priority access --access-log log.jsonl` | Migrate what you actually read first, so quality improves where you will notice. |
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
+| `--refit` | Refit the adapter part-way through, on records not yet migrated. Off by default; see below. |
 | `--resume <job-id>` | Continue an interrupted job. `rebasis resume <job-id>` is the same thing. |
 
 ### Whether to run it at all
@@ -243,6 +244,35 @@ rebasis status
 
 Takes no lock, so it works while a migration is running — which is exactly when
 you want it.
+
+## Refitting part-way through
+
+```bash
+rebasis migrate --adapter adapters/forward.rbs --store ... --refit
+```
+
+Off by default. It samples records that have **not** been migrated yet,
+re-embeds them with the new model — the one recorded in the adapter's manifest,
+so there is no second flag to get wrong — refits on those pairs alone, and
+adopts the result only if it beats the adapter in use by 0.01 on a held-out
+slice.
+
+**It is for one situation.** Measured over 216 cells, on a corpus that has not
+changed a refit is a pair-count effect worth a median +0.0075 at three times the
+fit budget, and nothing clears the adoption threshold. On an index that **grew
+into a domain the adapter never saw** — a vault that gained a department while
+the migration was running — 1,000 pairs drawn from what is left are worth a
+median **+0.16 nDCG** and beat 8,000 pairs drawn from the migrated half by
+**+0.20**. [The numbers](../continuous-refit.md).
+
+The guard is why it is safe to leave on in either case: it declines in the first
+and adopts in the second, and every attempt is audited with its reason.
+
+An adopted adapter is written to `.rebasis/adapters/<job>-refit-<n>.rbs` and the
+job is pointed at it, so `rebasis resume` continues with it rather than
+reloading the file the job started with. It needs a store that returns document
+text — there is no way to make a real pair without re-embedding one — and it
+says so at the start of the run rather than at the first checkpoint.
 
 ## Stopping it, and starting it again
 
