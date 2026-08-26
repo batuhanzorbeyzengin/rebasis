@@ -70,3 +70,8 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
   underneath that band
 - [What a migration does to the index](index-health.md) — the check the read-back
   cannot do
+- [Merging two embedding spaces](mixed-space-fusion.md) — serving an index that
+  is halfway between two models
+- [Against a published result](vs-drift-adapter.md) — the same three adapters,
+  measured against the paper that reports 95–99%
+- [Related work](related-work.md) — and the door that is closed
