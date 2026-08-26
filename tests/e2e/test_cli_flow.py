@@ -245,6 +245,48 @@ class TestProbe:
 
         assert replayed.exit_code == EXIT_USAGE, replayed.output
 
+    def test_an_access_log_weights_the_queries_and_the_run_says_so(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """ARR under an access log estimates a different quantity — retention on
+        the questions people send rather than on a uniform draw over the corpus
+        — so a run that used one has to carry that fact into its output. Two
+        numbers under one name is the failure this project keeps designing
+        against.
+        """
+        log = corpus["tmp"] / "access.jsonl"
+        # A small hot set, the shape an access log has. The ids come from the
+        # fixture, so this weights records that are really in the index rather
+        # than names the sampler will never see.
+        log.write_text(
+            "".join(
+                json.dumps({"id": record_id, "count": 500}) + "\n"
+                for record_id in corpus["ids"][:100]
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, probe_args(corpus, "--access-log", str(log), "--json"))
+
+        assert result.exit_code == EXIT_OK, result.output
+        assert json.loads(result.stdout)["access_weighted"] is True
+
+    def test_without_one_the_run_says_that_too(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        result = runner.invoke(app, probe_args(corpus, "--json"))
+
+        assert json.loads(result.stdout)["access_weighted"] is False
+
+    def test_an_access_log_naming_nothing_in_the_index_is_not_a_weighted_run(  # type: ignore[no-untyped-def]
+        self, corpus
+    ) -> None:
+        """Reporting the flag the user passed rather than the draw that happened
+        would claim a measurement that was not taken."""
+        log = corpus["tmp"] / "elsewhere.jsonl"
+        log.write_text('{"id": "not-in-this-index", "count": 900}\n', encoding="utf-8")
+
+        result = runner.invoke(app, probe_args(corpus, "--access-log", str(log), "--json"))
+
+        assert result.exit_code == EXIT_OK, result.output
+        assert json.loads(result.stdout)["access_weighted"] is False
+
     def test_a_malformed_query_log_exits_with_the_usage_code(self, corpus) -> None:  # type: ignore[no-untyped-def]
         broken = corpus["tmp"] / "queries.jsonl"
         broken.write_text("this is not json\n", encoding="utf-8")

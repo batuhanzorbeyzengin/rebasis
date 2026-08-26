@@ -33,6 +33,16 @@ def probe_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI f
             help="Real query log (JSONL). Always preferred when available",
         ),
     ] = None,
+    access_log: Annotated[
+        Path | None,
+        typer.Option(
+            "--access-log",
+            help=(
+                'JSONL of {"id": ..., "count": ...}. Weights which sampled '
+                "records become query proxies, so ARR describes what is read"
+            ),
+        ),
+    ] = None,
     report: Annotated[
         Path | None,
         typer.Option("--report", help="Write a report here; .html for HTML, otherwise Markdown"),
@@ -96,6 +106,7 @@ def probe_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI f
         print_json,
         print_next_step_after_probe,
         print_result,
+        read_access_log,
         write_reports,
     )
     from rebasis.probe.session import probe_store
@@ -140,6 +151,7 @@ def probe_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI f
             # Beside the audit trail rather than in whatever directory the
             # command was run from, so `--state-dir` moves both together.
             cache_dir=default_embedding_cache_dir(state_dir),
+            access_counts=read_access_log(access_log),
             on_stage=steps.stage,
         )
 

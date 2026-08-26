@@ -153,7 +153,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     index nobody could rebuild. Take a backup you can restore without rebasis,
     and try `--limit` on a slice first.
     """
-    from rebasis.cli._pipeline import audit_writer_for, open_target_store
+    from rebasis.cli._pipeline import audit_writer_for, open_target_store, read_access_log
     from rebasis.core import load_adapter
     from rebasis.errors import ConfigError
     from rebasis.manifest import ADAPTERS_DIR, SHADOW_DIR, default_state_dir
@@ -227,7 +227,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             )
 
         if resume is None:
-            priorities = _read_access_log(access_log) if priority == "access" else None
+            priorities = read_access_log(access_log) if priority == "access" else None
             if priority == "access" and priorities is None:
                 raise ConfigError(
                     "`--priority access` needs an access log.",
@@ -863,26 +863,6 @@ def _enqueue_all(
     if chunk:
         queued += engine.prepare(chunk, priorities=priorities, total=total)
     return queued
-
-
-def _read_access_log(path: Path | None) -> dict[str, float] | None:
-    """Read access counts, so hot records migrate first."""
-    if path is None:
-        return None
-
-    import json
-
-    counts: dict[str, float] = {}
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            payload = json.loads(stripped)
-            record_id = payload.get("id") or payload.get("record_id")
-            if record_id is not None:
-                counts[str(record_id)] = float(payload.get("count", 1))
-    return counts or None
 
 
 def _memory_ceiling(value: str | None) -> int | None:

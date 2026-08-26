@@ -60,7 +60,7 @@ from rebasis.storage.embedding_cache import open_cached_embedder
 from rebasis.store.base import require_capability
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from rebasis.audit import AuditWriter
@@ -109,6 +109,9 @@ class CorpusSample:
     strategy: str
     seed: int
     pool_size: int = 0
+    #: Whether the query proxies were actually drawn weighted. False when no
+    #: access log was given *and* when one was given that named nothing here.
+    access_weighted: bool = False
     #: Cluster of each record, when the sample was stratified. This is what
     #: makes ``tail_arr`` computable — without it, heterogeneous drift is
     #: invisible, and one global adapter stalling on part of the corpus while
@@ -163,8 +166,14 @@ def draw_corpus_sample(  # noqa: PLR0913 - one argument per sampling input
     seed: int = 0,
     batch_size: int = 1_000,
     need_text: bool = True,
+    access_counts: Mapping[str, float] | None = None,
 ) -> CorpusSample:
     """Draw a sample of the index and read back its vectors and text.
+
+    ``access_counts`` maps record id to how often it was read, and weights which
+    sampled records become **query proxies** — leaving the sample itself uniform,
+    for the reason :func:`~rebasis.sample.split_disjoint` gives. Records the log
+    does not mention count as read once.
 
     Raises:
         StoreUnsupported: When the store cannot return text and text is needed —
@@ -184,6 +193,7 @@ def draw_corpus_sample(  # noqa: PLR0913 - one argument per sampling input
             seed=seed,
             batch_size=batch_size,
             need_text=need_text,
+            access_counts=access_counts,
         )
 
 
@@ -196,6 +206,7 @@ def _draw(  # noqa: PLR0913 - mirrors its caller's signature
     seed: int,
     batch_size: int,
     need_text: bool,
+    access_counts: Mapping[str, float] | None = None,
 ) -> CorpusSample:
     n_total = store.count()
     pool_ids, pool_vectors = _reservoir(store, n_total=n_total, seed=seed, batch_size=batch_size)
@@ -219,8 +230,17 @@ def _draw(  # noqa: PLR0913 - mirrors its caller's signature
     if need_text:
         ids, texts, vectors, labels = _drop_empty_texts(ids, texts, vectors, labels)
 
+    # Weights go on the **query split**, not on the sample. The sample does two
+    # jobs — it is the mini-index every measurement runs against, and it is the
+    # pool the queries come out of — and weighting it fills the mini-index with
+    # frequently-read documents, which changes the *distractors*: a property of
+    # the index rather than of the questions asked of it. Measured over 36
+    # cells, weighting the split leaves the estimate half as far from the
+    # whole-corpus quantity as weighting the sample does (+0.025 against
+    # +0.051). `docs/access-weighting.md` has both.
+    access = _access_vector(ids, access_counts)
     query_positions, fit_positions = split_disjoint(
-        _positional(len(ids), drawn.strategy, seed), heldout, seed=seed
+        _positional(len(ids), drawn.strategy, seed), heldout, seed=seed, weights=access
     )
 
     log.info(
@@ -240,6 +260,7 @@ def _draw(  # noqa: PLR0913 - mirrors its caller's signature
         strategy=drawn.strategy,
         seed=seed,
         pool_size=len(pool_ids),
+        access_weighted=access is not None,
         cluster_labels=labels,
     )
 
@@ -266,6 +287,7 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     device: str = "cpu",
     cache_dir: Path | str | None = None,
     fit_migration: bool = False,
+    access_counts: Mapping[str, float] | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> tuple[ProbeResult, CorpusSample]:
     """Probe a live store: sample it, re-embed it, and decide.
@@ -282,6 +304,11 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     means nothing is cached and nothing is written; ``rebasis probe`` passes
     :func:`~rebasis.storage.default_embedding_cache_dir`. See the module
     docstring for why the default is off here and on there.
+
+    ``access_counts`` weights which sampled records become query proxies, so
+    ARR describes the questions people actually send rather than a uniform draw
+    over the corpus. It changes what is being estimated and says so in the
+    result; `docs/access-weighting.md` has what it is worth and what it costs.
 
     ``fit_migration`` adds a second fit in the opposite direction — the map
     `rebasis migrate` rewrites an index with — scored on what a *completed*
@@ -317,7 +344,13 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
 
         stage("Sampling the index")
         corpus = sample or draw_corpus_sample(
-            store, size=size, heldout=heldout, strategy=strategy, seed=seed, batch_size=batch_size
+            store,
+            size=size,
+            heldout=heldout,
+            strategy=strategy,
+            seed=seed,
+            batch_size=batch_size,
+            access_counts=access_counts,
         )
 
         # Timed separately from everything else because it is the one step whose
@@ -411,6 +444,11 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     # Outside the measured block: the summary describes the work, and writing
     # it down is not part of the work.
     result.resources = usage.summary.to_dict()
+    # Read off the sample rather than off the argument: an access log that named
+    # nothing in this sample weighted nothing, and reporting the flag the user
+    # passed instead of the draw that happened would claim a measurement that
+    # was not taken.
+    result.access_weighted = corpus.access_weighted
 
     if fit_migration:
         # After the timed block on purpose. This is a second fit over the same
@@ -639,6 +677,28 @@ def _drop_empty_texts(
         vectors[index],
         None if labels is None else labels[index],
     )
+
+
+def _access_vector(
+    ids: Sequence[str], access_counts: Mapping[str, float] | None
+) -> FloatArray | None:
+    """Access counts as a weight per sampled record, or ``None``.
+
+    A record the log does not mention gets ``1.0`` rather than ``0.0``: a log
+    records what *was* read, and absence from it means "not seen in this window"
+    rather than "never retrievable". Zero would make such a record ineligible as
+    a query proxy, which is a stronger claim than any access log supports.
+
+    ``None`` when the log names nothing in this sample at all, so the caller
+    falls back to a uniform split rather than to a vector of identical ones —
+    the two behave the same and only the first can be reported honestly.
+    """
+    if not access_counts:
+        return None
+    weights = np.array([float(access_counts.get(record_id, 1.0)) for record_id in ids])
+    if not np.any(weights != 1.0):
+        return None
+    return np.asarray(weights, dtype=np.float32)
 
 
 def _positional(n: int, strategy: str, seed: int) -> SampleResult:

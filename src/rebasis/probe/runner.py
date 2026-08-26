@@ -154,6 +154,11 @@ class ProbeResult:
     #: What this run cost. Written to the report and the audit record so
     #: "it got slower" becomes a fact rather than a feeling.
     resources: dict[str, Any] = field(default_factory=dict)
+    #: Whether the query proxies were drawn weighted by an access log. It
+    #: changes what ARR *estimates* — retention on the questions people send,
+    #: rather than on a uniform draw over the corpus — so a report that did not
+    #: carry it would be two different numbers under one name.
+    access_weighted: bool = False
     #: What a full reindex would cost, extrapolated from this run's own
     #: measured embedding rate.
     reindex_cost: dict[str, Any] = field(default_factory=dict)
@@ -180,6 +185,7 @@ class ProbeResult:
             "baselines": {k: round(v, 4) for k, v in self.baselines.items()},
             **({"migration": self.migration.to_dict()} if self.migration is not None else {}),
             "tier": self.ground_truth_tier,
+            "access_weighted": self.access_weighted,
             "n_documents": self.n_documents,
             "n_queries": self.n_queries,
             "n_fit_pairs": self.n_fit_pairs,

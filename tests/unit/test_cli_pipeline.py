@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from rebasis.cli._pipeline import load_query_log, write_reports
-from rebasis.cli.migrate import _parse_memory, _read_access_log
+from rebasis.cli._pipeline import load_query_log, read_access_log, write_reports
+from rebasis.cli.migrate import _parse_memory
 from rebasis.errors import ConfigError, MalformedQueryLog
 
 pytestmark = pytest.mark.unit
@@ -106,10 +106,10 @@ class TestAccessLog:
     def test_reads_counts(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         path = write_jsonl(tmp_path / "a.jsonl", [{"id": "a", "count": 9}, {"id": "b"}])
 
-        assert _read_access_log(path) == {"a": 9.0, "b": 1.0}
+        assert read_access_log(path) == {"a": 9.0, "b": 1.0}
 
     def test_no_file_means_no_priorities(self) -> None:
-        assert _read_access_log(None) is None
+        assert read_access_log(None) is None
 
 
 class TestReportFormat:

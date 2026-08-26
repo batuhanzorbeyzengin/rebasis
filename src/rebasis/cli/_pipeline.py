@@ -35,6 +35,7 @@ __all__ = [
     "open_embedders",
     "open_target_store",
     "print_result",
+    "read_access_log",
     "write_reports",
 ]
 
@@ -102,6 +103,43 @@ def open_embedders(  # noqa: PLR0913 - each profile override is a documented fla
             profile=resolve_profile(old, old_overrides, fallback_dim=store_dim),
         )
     return old_embedder, new_embedder
+
+
+def read_access_log(path: Path | None) -> dict[str, float] | None:
+    """Read access counts from a JSONL log: ``{"id": ..., "count": ...}``.
+
+    Two commands take one and they mean different things by it, which is why it
+    is parsed in one place and interpreted in two. `migrate --priority access`
+    orders the queue, so hot records are rewritten first and quality improves
+    where somebody will notice. `probe --access-log` weights which sampled
+    records become **query proxies**, so ARR describes the questions people
+    actually send.
+
+    ``count`` defaults to 1 for a line that omits it, and ``record_id`` is
+    accepted beside ``id`` because these logs are usually exported from
+    somewhere else and a rigid schema means everyone writes a converter first.
+
+    Returns ``None`` for no path and for a log naming nothing, so a caller can
+    tell "no log" from "a log with no usable lines" only by what it passed —
+    which is right: both mean the same thing downstream, and reporting an empty
+    log as a weighting that happened would be worse.
+    """
+    if path is None:
+        return None
+
+    import json
+
+    counts: dict[str, float] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            record_id = payload.get("id") or payload.get("record_id")
+            if record_id is not None:
+                counts[str(record_id)] = float(payload.get("count", 1))
+    return counts or None
 
 
 def load_query_log(path: Path) -> QueryLog:

@@ -109,10 +109,29 @@ answer, and guessing would be worse than waiting.
     `top_k_search` consults no size threshold. On the project's own A10G host it
     reports kNN at 31.4x against the recorded 22x, and the MLP fit at 7.5x
     against 5.9x.
-- **Access-log-weighted sampling for `probe`.** The sampler supports weights;
-  nothing passes them. Weighting the sample by what people actually read would
-  make ARR describe the queries that matter, but it also makes the sample
-  non-uniform in a way the confidence interval does not currently model.
+- ~~**Access-log-weighted sampling for `probe`.**~~ **Done, and the entry named
+  the wrong place for the weights.** `rebasis probe --access-log` is in.
+
+    A `probe` sample does two jobs: it is the mini-index every measurement runs
+    against, and it is the pool the query proxies are split out of. Handing
+    weights to the sampler — what this entry described — fills the mini-index
+    with frequently-read documents and changes the **distractors**, which is a
+    property of the index rather than of the questions asked of it. The weights
+    go on the **split** instead, leaving the mini-index a fair miniature.
+    Measured, that leaves the estimate about half as far from the whole-corpus
+    quantity as weighting the sample does (+0.025 against +0.051).
+
+    **The interval survives it**, which is what this entry was blocked on. Over
+    36 cells and 12,960 replicate probes, the bootstrap half-width divided by the
+    estimator's actual spread is 1.92 for the plain design against a correct
+    1.96, and 1.84 under weighted queries — about **6% narrow**, in the direction
+    the entry worried about and small against decision bands 0.10 wide. Median
+    coverage is unchanged at 0.94; the tail moves from 2 cells under 0.90 to 6.
+
+    Weighting shifts ARR by a median +0.015 at a 100x access ratio and up to
+    +0.073, so it is a different quantity and the report says which one it is:
+    `--json` carries `access_weighted`, and both report formats say so in prose.
+    [The numbers](docs/access-weighting.md).
 
 ## Beyond 0.3 — where the headroom actually is
 

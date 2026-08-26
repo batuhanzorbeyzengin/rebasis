@@ -233,6 +233,16 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
 
 def _how_to_read_html(result: ProbeResult) -> str:
     blocks = [_BANDS_HTML, _INTERVAL_HTML]
+    if result.access_weighted:
+        blocks.append(
+            "<p><strong>Queries were drawn weighted by an access log.</strong> "
+            "Every number here describes retention on the questions people "
+            "actually send, not on a uniform draw over the corpus. Those are "
+            "different quantities and this one is usually the higher of the two, "
+            "because a frequently-read document is one the index already handles "
+            "well. Compare it against another weighted run, not against an "
+            "unweighted one.</p>"
+        )
     if result.ground_truth_tier == "t0":
         blocks.append(
             "<p><strong>This run used document proxies, not real queries.</strong> "

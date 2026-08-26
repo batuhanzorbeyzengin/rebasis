@@ -63,6 +63,7 @@ writes to it.
 | `--heldout` | 1000 | Documents held out as query proxies |
 | `--k` | 10 | Cut-off for every metric |
 | `--queries` | — | Real query log (JSONL). Always preferred when available. |
+| `--access-log` | — | JSONL of `{"id": ..., "count": ...}`. Weights which sampled records become query proxies, so ARR describes what is read rather than a uniform draw — [measured](../access-weighting.md) |
 | `--synth-queries` | — | `title\|lead\|keywords` — estimate the upgrade from the documents when you have no query log |
 | `--report` | — | Write a report; `.html` for HTML, otherwise Markdown |
 | `--strategy` | stratified | `stratified` or `random` |
@@ -77,6 +78,16 @@ writes to it.
 
 `probe` needs to answer two questions: how well an adapter bridges, and whether
 the new model is actually better on your corpus. It can always answer the first.
+**`--access-log` changes what ARR estimates, and the report says so.** Most
+indexes are not read uniformly: a small set of documents answers most questions,
+and retention on *those* is what decides whether an upgrade hurts. The weights go
+on the **query split** rather than on the sample — a `probe` sample is also the
+mini-index every measurement runs against, and weighting that would change the
+distractors instead of the questions. Measured, weighting shifts ARR by a median
++0.015 at a 100× access ratio and the bootstrap interval stays within 6% of its
+correct width. `--json` carries `access_weighted`; compare a weighted run against
+another weighted run, never against an unweighted one.
+
 The second needs queries.
 
 With neither `--queries` nor `--synth-queries`, the run is reported as

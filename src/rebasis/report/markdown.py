@@ -223,6 +223,19 @@ def _headline_numbers(result: ProbeResult) -> list[str]:
                 f"queries: {result.n_queries:,} · "
                 f"fit pairs: {result.n_fit_pairs:,}"
             ),
+            *(
+                [
+                    (
+                        "- Queries drawn **weighted by an access log**, so the "
+                        "numbers above describe retention on the questions people "
+                        "send rather than on a uniform draw over the corpus. Those "
+                        "are different quantities and this one is usually the "
+                        "higher of the two."
+                    )
+                ]
+                if result.access_weighted
+                else []
+            ),
             "",
         ]
     )
