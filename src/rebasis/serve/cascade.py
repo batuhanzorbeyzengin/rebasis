@@ -581,6 +581,43 @@ class Cascade:
         """
         return f"{self._fingerprint}:{record_id}"
 
+    def _check_width(self, encoded: FloatArray) -> None:
+        """Refuse a batch whose width is not the one the profile declares.
+
+        The cache is keyed on the encoding profile's fingerprint, and that
+        fingerprint covers every field of the profile including ``dim``. So a
+        cache namespace is supposed to hold one width — and everything
+        downstream relies on it: ``_rerank`` stacks whatever the cache returns
+        into one matrix and multiplies it by the query.
+
+        What breaks the assumption is an embedder that does not honour its own
+        profile — a hand-set ``--new-dim`` that does not match the model, or a
+        model id that started resolving to different weights. Left alone, that
+        surfaces as ``all the input array dimensions ... must match exactly``
+        from inside numpy, several frames from anything the user chose. Checked
+        here, at the one place vectors enter the cache, it names both numbers.
+
+        Raises:
+            EmbeddingDimensionMismatch: When the encoder's output is not the
+                declared width.
+        """
+        declared = self._embedder.profile.dim
+        actual = int(encoded.shape[1]) if encoded.ndim > 1 else 0
+        if not declared or actual == declared:
+            return
+        from rebasis.errors import EmbeddingDimensionMismatch
+
+        raise EmbeddingDimensionMismatch(
+            f"{self._embedder.profile.model_id} returned {actual}-dimensional vectors "
+            f"but its profile declares {declared}.",
+            hint=(
+                "The cache is keyed on the profile, so a mismatch would put two "
+                "widths under one key. Check any --new-dim override against the "
+                "model, and clear the cache if the model itself changed."
+            ),
+            context={"dim": actual, "model_id": self._embedder.profile.model_id},
+        )
+
     def _rerank(self, query: FloatArray, found: Sequence[Hit], k: int) -> list[Hit]:
         """Score the candidates in the new space and place the rest around them."""
         if not found:
@@ -656,6 +693,7 @@ class Cascade:
         )
         self._stats.embed_seconds += time.perf_counter() - started
         self._stats.documents_embedded += len(ordered)
+        self._check_width(encoded)
 
         vectors = l2_normalize(encoded)
         fresh = {
