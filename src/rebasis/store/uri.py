@@ -5,17 +5,51 @@ the backend, the location and the collection, so a command line, a config file
 and an audit record can all identify the same index unambiguously.
 
 The credential portion of a URI is **never logged**, so parsing keeps it
-separate from the parts that are safe to record.
+separate from the parts that are safe to record. That holds on the *failure*
+paths too, and it did not always: both `InvalidStoreURI` messages below quoted
+the string they had rejected, which meant a password reached the error panel of
+every command that takes a `--store`, and from there `rebasis doctor --json` —
+which `README.md` tells people to attach to a bug report. They are redacted by
+shape rather than by parsing, because the moment a URI most needs redacting is
+the moment it could not be parsed.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
 from rebasis.errors import InvalidStoreURI
 
-__all__ = ["StoreURI", "parse_store_uri"]
+__all__ = ["StoreURI", "parse_store_uri", "redact_credentials"]
+
+#: A ``user:password@`` segment, matched without parsing.
+#:
+#: :func:`parse_store_uri` raises on strings `urlsplit` cannot make sense of, so
+#: the one moment a URI most needs redacting is the moment it cannot be parsed
+#: to find the credentials structurally. This finds the shape instead: a run of
+#: characters, a colon, anything that is not a separator, an ``@``. The password
+#: half may be empty, because ``user:@host`` is a real thing people type.
+#:
+#: **A username with no password is left alone**, which is where this is weaker
+#: than :meth:`StoreURI.redacted` — that one drops a bare username too, because
+#: it knows structurally where the userinfo ends. Matching ``user@host`` by shape
+#: would also match an address inside a path or a query, and mangling a URI in
+#: the message that is trying to explain what is wrong with it is a worse
+#: failure than naming an account with no secret attached to it.
+_CREDENTIALS = re.compile(r"[^\s/:@]+:[^\s/@]*@")
+
+
+def redact_credentials(text: str) -> str:
+    """Replace anything credential-shaped in ``text`` with ``<credentials>@``.
+
+    For strings that are about to be shown to somebody: an error message, a
+    diagnostic report, a log line. :meth:`StoreURI.redacted` is the structural
+    version and is better where a parse succeeded; this is for the raw string,
+    where it did not.
+    """
+    return _CREDENTIALS.sub("<credentials>@", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +101,7 @@ def parse_store_uri(uri: str) -> StoreURI:
 
     if "://" not in raw:
         raise InvalidStoreURI(
-            f"{raw!r} has no backend scheme.",
+            f"{redact_credentials(raw)!r} has no backend scheme.",
             hint=(
                 "A store URI looks like `backend:///path#collection`, for example "
                 "`chroma:///path/to/db#my_collection`. Run `rebasis doctor` to "
@@ -79,7 +113,7 @@ def parse_store_uri(uri: str) -> StoreURI:
     backend = parts.scheme.lower()
     if not backend:
         raise InvalidStoreURI(
-            f"{raw!r} has an empty backend scheme.",
+            f"{redact_credentials(raw)!r} has an empty backend scheme.",
             hint="Start the URI with a backend name, for example `chroma://`.",
         )
 
