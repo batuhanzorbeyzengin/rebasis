@@ -225,10 +225,31 @@ exactly the distinctions a bridge finds hardest to preserve. Recall@200 retentio
 runs 0.67–0.96 here against 0.92–1.00 on the technical corpora, and the
 arrangement is worth correspondingly less.
 
-### It reproduces the paper's qualitative finding
+### What the paper says, and what these runs do and do not reproduce
 
-The paper reports alignment collapsing on two of the three tasks and holding on
-the third. Same shape here, on a different model ladder:
+An earlier version of this section said the paper reports alignment collapsing
+on two of the three tasks. **That was backwards.** What the paper's prose says,
+verbatim, is the opposite count:
+
+> Without alignment, cross-model retrieval fails almost completely. After
+> alignment, retrieval becomes feasible across models, and **in two of the three
+> tasks, upgrading to a stronger query model can yield substantial performance
+> gains.**
+
+Two things follow, and the second is the reason the sentence was worth
+re-reading rather than paraphrasing.
+
+**The collapse without alignment is reproduced, and strongly.** That is the
+paper's other claim in the same breath, and it is the one these runs are placed
+to check: a naive swap retains 0.125 of a reindex across the 62 runs in
+[`bridge-band.md`](bridge-band.md). "Fails almost completely" is what 0.125
+looks like.
+
+**The gains are a claim about a grid, and this ladder is not that grid.** The
+paper varies seven query models against seven document models — 49 pairs per
+task — and its claim is that gaining pairs *exist* in two of the three. Three
+rungs of one ladder cannot confirm or contradict that, and these three runs sit
+on the losing side of it:
 
 | corpus | status quo | bridged | cascade@200 |
 |---|---|---|---|
@@ -237,8 +258,17 @@ the third. Same shape here, on a different model ladder:
 | trec-covid, potion→MiniLM | 0.457 | **0.460** (+0.7%) | 0.481 (+5%) |
 
 On HotpotQA a bridged query loses nearly two thirds of what the user already
-had. On TREC-COVID it loses nothing — the one task where the paper finds
-bridging can beat the status quo outright, and the one where this finds the same.
+had. On TREC-COVID it loses nothing. Those are this harness' numbers and they
+stand; what does not stand is reading them as an independent confirmation of the
+paper's task-level result, because the paper's prose never names **which** two
+tasks gained — that lives in its Figure 4, which was not read. The earlier
+version of this section attributed the gaining task to TREC-COVID. Nothing in
+the text supports that attribution, and it has been withdrawn.
+
+Worth recording that the two overlap more than the correction implies: MiniLM
+and bge-small are both in the paper's seven, so `MiniLM→bge-small` is a cell of
+its grid as well as a rung of this ladder. Reading one against the other would
+need the per-cell values, which are in the figure rather than the prose.
 
 ### The cascade break-even is conservative
 
@@ -290,10 +320,14 @@ single-stage break-even, because that is the arrangement whose cost is known.
 - **One ladder.** Three model pairs, 256 → 384 → 384 → 768. A 2021-era model to a
   2025-era one may sit further right on the gain axis than anything here.
 - **The rerank is a bi-encoder**, the model the user is upgrading to — not a
-  cross-encoder bolted on. Published work finds off-the-shelf rerankers can make
-  a strong first stage *worse*
-  ([arXiv:2605.24297](https://arxiv.org/pdf/2605.24297)); that failure mode does
-  not apply here, and it is the reason this was measured rather than assumed.
+  cross-encoder bolted on. Published work finds that scoring progressively more
+  documents with an off-the-shelf reranker helps a strong first stage at first
+  and then *degrades* it past a point — Jacob et al., [Drowning in Documents:
+  Consequences of Scaling Reranker Inference](https://arxiv.org/abs/2411.11767)
+  (arXiv:2411.11767, ReNeuIR 2025 at SIGIR). That failure mode does not apply
+  here: the second stage is the new model ranking in its own space, which is
+  what a full reindex would have done anyway. It is the reason this was measured
+  rather than assumed.
 - **N = 100 and 200 only.** The two differ by a point or two at most, which is
   the first evidence that the curve flattens early — but where it flattens has
   not been measured.
