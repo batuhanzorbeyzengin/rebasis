@@ -491,6 +491,18 @@ filterwarnings = [
     # floor instead would withdraw the 0.5.5 support the README claims, over a
     # warning in someone else's code.
     "ignore::DeprecationWarning:chromadb.*",
+    # typer up to 0.25 does `from click.utils import get_binary_stream`, and
+    # click 8.5.0 turned that name into a deprecated alias. The floor job is the
+    # only place the two meet: the lock resolves typer 0.27.1, which dropped the
+    # import, and every other job installs from the lock. Measured — 0.16
+    # through 0.25 warn, 0.26.0 is the first that does not.
+    #
+    # Raising the floor to 0.26 instead would withdraw support for ten typer
+    # releases over a warning in someone else's code, and the warning is exactly
+    # that: typer 0.16 runs correctly, it is only this project's
+    # `error::DeprecationWarning` policy that turns the notice into a failure.
+    # Same reasoning as the chromadb line above.
+    "ignore::DeprecationWarning:typer.*",
 ]
 
 # ── coverage ─────────────────────────────────────────────────────────
