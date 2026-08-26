@@ -80,6 +80,16 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             help="Keep a shadow copy so the migration can be rolled back",
         ),
     ] = True,
+    shadow_precision: Annotated[
+        str,
+        typer.Option(
+            "--shadow-precision",
+            help=(
+                "float32 for a bit-identical rollback, float16 for half the disk "
+                "and a rollback that is measurably close rather than exact"
+            ),
+        ),
+    ] = "float32",
     max_memory: Annotated[
         str | None, typer.Option("--max-memory", help="Ceiling, e.g. 2GB")
     ] = None,
@@ -172,6 +182,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             hint="`rebasis migrate --adapter a.rbs --store chroma:///db#docs`",
         )
 
+    _check_precision(shadow_precision)
     loaded, manifest, _ = load_adapter(adapter)
     # Before the store is even opened: this one needs nothing but the manifest,
     # and the cheapest refusal is the one that happens first.
@@ -196,6 +207,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             audit=writer,
             store_uri=store,
             adapter_path=str(adapter),
+            shadow_precision=shadow_precision,
             refit=RefitPolicy(
                 enabled=refit,
                 every_n_records=refit_every,
@@ -248,6 +260,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             dim=loaded.output_dim,
             state_dir=directory,
             keep_original=keep_original,
+            shadow_precision=shadow_precision,
         )
         console.print()
         console.print(budget.render())
@@ -644,6 +657,59 @@ def _resume_defaults(
     return recovered_adapter, recovered_store
 
 
+#: What ``--shadow-precision`` accepts. ``ShadowStore`` treats anything that is
+#: not ``float16`` as ``float32``, which is the right default for a library and
+#: the wrong one for a flag: a typo would silently produce the safe behaviour
+#: while the user believed they had asked for the other.
+SHADOW_PRECISIONS = ("float32", "float16")
+
+
+def _note_shadow_precision(shadow_root: Path, job_id: str) -> None:
+    """Say what a rollback from this shadow is worth, before it happens.
+
+    ``float32`` restores the bytes that were read. ``float16`` halves the disk
+    and restores something measurably close: over 68 corpus/model runs the
+    top-10 set survived on 99.8% of queries and nDCG@10 moved by at most 0.0017
+    (`docs/shadow-precision.md`). Neither is a surprise worth springing at the
+    confirmation prompt, so both are printed.
+
+    Silent when the shadow cannot be read. This is a note beside a confirmation,
+    and `MigrationEngine.rollback` raises properly a moment later if the shadow
+    is really missing — reporting it twice, the first time as a formatting
+    problem, would be worse than reporting it once where it belongs.
+    """
+    from rebasis.storage.shadow import ShadowStore
+
+    try:
+        precision = ShadowStore(shadow_root, job_id).manifest().precision
+    except Exception:  # noqa: BLE001 - a note must not pre-empt the real error
+        return
+    if precision == "float16":
+        console.print(
+            "  [yellow]precision float16 — close, not bit-identical[/yellow] "
+            "(measured: nDCG@10 within 0.002)"
+        )
+    else:
+        console.print(f"  precision {precision}, so the restore is bit-identical")
+
+
+def _check_precision(precision: str) -> None:
+    """Refuse a precision that is not one of the two.
+
+    Raises:
+        ConfigError: For anything else.
+    """
+    if precision in SHADOW_PRECISIONS:
+        return
+    from rebasis.errors import ConfigError
+
+    raise ConfigError(
+        f"--shadow-precision takes {' or '.join(SHADOW_PRECISIONS)}, not {precision!r}.",
+        hint="float32 keeps the rollback bit-identical; float16 halves the disk.",
+        context={"precision": precision},
+    )
+
+
 def _refit_collaborators(
     manifest: AdapterManifest,
     store: VectorStore,
@@ -1038,6 +1104,11 @@ def rollback_command(
         console.print(f"[bold]rollback[/bold]  job {job_id}")
         console.print(f"  store     {store_uri}")
         console.print("  restores  the original vectors from the shadow copy")
+        # Read off the shadow's own manifest rather than off the job's config:
+        # the shadow is the thing being restored from, and it is the only record
+        # that cannot disagree with itself. A user deciding whether to proceed
+        # is deciding on exactly this.
+        _note_shadow_precision(directory / SHADOW_DIR, job_id)
         console.print()
         if not confirm("Proceed?", assume_yes=yes, no_input=no_input):
             console.print("[yellow]Nothing was written.[/yellow]")

@@ -77,10 +77,19 @@ answer, and guessing would be worse than waiting.
 
     It also inherits the band's other result: `migrated` beat doing nothing in
     **5 of 51**, and the five all had an upgrade gain of 1.2 or more.
-- **`--shadow-precision fp16`.** Halves the shadow copy's disk cost and gives up
-  the bit-identical rollback guarantee. A half-guarantee may be more dangerous
-  than no guarantee; the plumbing is in place and the option is deliberately not
-  exposed until that is settled.
+- ~~**`--shadow-precision fp16`.**~~ **Measured, and it ships.** The worry was
+  that a half guarantee is more dangerous than no guarantee, so the plumbing sat
+  unexposed until somebody measured which this is. Over 68 corpus/model runs: no
+  vector leaves the format, the top-10 **set** survives on 99.78% of queries at
+  worst, and nDCG@10 moves by at most **0.0017** — inside ARR's own confidence
+  interval and below the threshold `RefitPolicy` calls noise. What moves is the
+  *order* within the top ten, on about 2% of queries.
+
+    `float32` stays the default, because the disk it costs is temporary. What
+    makes the option safe is that nothing claims bit-identity when it is on: the
+    pre-flight plan says so, the shadow manifest records the precision, and
+    `rollback` prints it off that file rather than off anyone's memory.
+    [The numbers](docs/shadow-precision.md).
 - **Local threshold calibration.** The GPU/CPU decisions in `compute/` come from
   measurements on two machines. Whether they hold on yours is unknown, and
   `doctor` should be able to find out rather than assume.

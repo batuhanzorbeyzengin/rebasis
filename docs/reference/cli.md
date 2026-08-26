@@ -170,6 +170,7 @@ rebasis is not part of, and try `--limit` on a slice first. See
 | `--priority` | none | `access` migrates what you read first |
 | `--access-log` | — | JSONL of `{"id": ..., "count": ...}` |
 | `--keep-original/--no-keep-original` | keep | Shadow copy for rollback |
+| `--shadow-precision` | float32 | `float16` halves the shadow's disk cost and makes the rollback close rather than exact — [measured at nDCG@10 within 0.002](../shadow-precision.md) |
 | `--power-aware/--no-power-aware` | on | Pause on low battery |
 | `--resume` | — | Continue an existing job id. Recovers `--adapter` and `--store` from the job. `rebasis resume JOB_ID` is the same thing under the verb that pairs with `pause` |
 | `--health-check/--no-health-check` | on | Measure what the index's own search returns against exact kNN, before and after |

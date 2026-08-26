@@ -145,6 +145,7 @@ class MigrationEngine:
         audit: AuditWriter | None = None,
         store_uri: str = "",
         adapter_path: str = "",
+        shadow_precision: str = "float32",
         refit: RefitPolicy | None = None,
         embedder: Embedder | None = None,
         adapter_root: Path | None = None,
@@ -165,7 +166,7 @@ class MigrationEngine:
         self.queue = JobQueue(db, self.job_id)
         # Counted so batch spans can be sampled the way batch logs are.
         self._batches = 0
-        self.shadow = ShadowStore(shadow_root, self.job_id)
+        self.shadow = ShadowStore(shadow_root, self.job_id, precision=shadow_precision)
         # Reservoir for the end-of-job durability check: ids, the vectors they
         # should hold, and how many candidates have gone past so far.
         self._kept: list[tuple[str, FloatArray]] = []
@@ -248,6 +249,12 @@ class MigrationEngine:
                     # Three values and they are not two: `true` and `false` are
                     # findings about the store, `null` is the absence of one.
                     "store_quantized": self.store.capabilities.quantized,
+                    # What a rollback of this job restores *to*. float16 halves
+                    # the shadow and makes the restore close rather than exact,
+                    # and which of the two was chosen is not recoverable from
+                    # the index afterwards — only from here and from the shadow
+                    # manifest beside it.
+                    "shadow_precision": self.shadow.precision,
                 },
                 outputs={"job_id": self.job_id, "state": str(JobState.PENDING)},
                 subject=self.job_id,

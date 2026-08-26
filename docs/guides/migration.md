@@ -109,6 +109,7 @@ Useful flags:
 | `--max-memory 2GB` | A ceiling. The batch size is computed from it — you should not have to. |
 | `--priority access --access-log log.jsonl` | Migrate what you actually read first, so quality improves where you will notice. |
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
+| `--shadow-precision float16` | Half the shadow's disk, a rollback that is close rather than exact. See below. |
 | `--refit` | Refit the adapter part-way through, on records not yet migrated. Off by default; see below. |
 | `--resume <job-id>` | Continue an interrupted job. `rebasis resume <job-id>` is the same thing. |
 
@@ -306,6 +307,30 @@ A paused job is a job stopped short, so everything under
 [Stopping short leaves two spaces in one index](#stopping-short-leaves-two-spaces-in-one-index)
 applies to it. Pausing is not a way to stop safely and walk away; it is a way to
 stop safely and come back.
+
+## Half the shadow, if you want it
+
+```bash
+rebasis migrate --adapter ... --store ... --shadow-precision float16
+```
+
+The shadow is `N x d x 4` bytes at the default `float32`, and half that at
+`float16`. What the half costs is the bit-identical restore.
+
+Measured over 68 corpus/model runs: no vector leaves the format, the top-10
+**set** comes back on 99.78% of queries at worst, and nDCG@10 against human
+judgements moves by at most **0.0017** — inside ARR's own confidence interval.
+What does move is the *order* within the top ten, on about 2% of queries.
+[The numbers](../shadow-precision.md).
+
+`float32` stays the default. A couple of gigabytes of temporary disk is cheaper
+than any argument about whether 0.0017 mattered on your index, and the space
+comes back when `rebasis gc` removes the shadow.
+
+If you do use it, nothing pretends otherwise: the disk-space plan before the
+confirmation says the rollback becomes approximate, and `rebasis rollback` prints
+the precision it is restoring from — read off the shadow file itself rather than
+off the job's configuration, because the shadow is the thing being restored from.
 
 ## Rolling back
 
