@@ -373,6 +373,22 @@ confirmation. It does not refuse. A quantized index is a deliberate engineering
 choice and migrating one is a legitimate thing to want; what you would not have
 without the check is a correct reading of the paragraph above.
 
+**sqlite-vec is the exception, and the exception is the storage engine's.** A
+`vec0` column declares an element type, and measured against the shipped
+extension, inserting a float32 vector into an `int8` or `bit` column is refused
+outright — as is querying one with a float32 vector. rebasis produces float32 and
+nothing else, so on such a table `migrate` and `rebasis.Bridge` were never going
+to work. The backend declares `can_upsert_vectors=False` for them, which stops
+`migrate` at the capability check before a job is opened rather than at a SQL
+error after the first batch's originals have been deleted.
+
+`probe` still works on an `int8` table: one byte per component decodes to a
+direction, quantization removed a single scale across the vector, and everything
+here normalises. A `bit` table cannot even be read — it packs one bit per
+component and `bit[7]` is a legal declaration, so the number of components is not
+recoverable from the blob and there is nowhere else to read it from. The backend
+declares `can_read_vectors=False` and says why.
+
 **What the shadow copy holds.** rebasis shadows what the store *returns*, and a
 quantized store returns a value decoded from its stored code. The shadow is
 still bit-identical — to that decoded view. It is not a copy of the vectors your

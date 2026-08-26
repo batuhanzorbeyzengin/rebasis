@@ -31,6 +31,7 @@ from rebasis.errors import (
     EmbeddingDimensionMismatch,
     MissingDependency,
     StoreError,
+    StoreUnsupported,
     StoreWriteFailed,
 )
 from rebasis.types import FloatArray, Hit, Record, StoreCapabilities, as_float32
@@ -80,8 +81,8 @@ class SqliteVecStore:
         self._dimension: int | None = None
         # Two attributes rather than one: ``None`` is a real answer here — an
         # empty table declares nothing to read — and not a "not looked yet".
-        self._quantized: bool | None = None
-        self._quantization_checked = False
+        self._element: str | None = None
+        self._element_checked = False
 
     @classmethod
     def from_uri(cls, uri: StoreURI, **kwargs: Any) -> SqliteVecStore:
@@ -126,16 +127,29 @@ class SqliteVecStore:
     @property
     def capabilities(self) -> StoreCapabilities:
         """Everything except server-side filtering on arbitrary metadata."""
+        element = self._element_type()
+        narrow = element is not None and element != "float32"
         return StoreCapabilities(
-            can_read_vectors=True,
+            # A `bit` column carries one bit per component, and a vec0 `bit[N]`
+            # is legal for any N — `bit[7]` and `bit[12]` both create. So the
+            # blob's length does not determine the dimension, and there is no
+            # other place to read it from: a vec0 table declares its virtual
+            # schema without a type on the vector column. Reading vectors out of
+            # one is not a lossy operation, it is an impossible one.
+            can_read_vectors=element != "bit",
             can_read_text=self._text_column is not None,
-            can_upsert_vectors=True,
+            # Measured against the shipped extension: inserting a float32 vector
+            # into an int8 or bit column is refused outright — "expected to be
+            # of type int8, but a float32 vector was provided". rebasis only
+            # produces float32, so declaring this True would be promising a
+            # write that the storage engine itself rejects.
+            can_upsert_vectors=not narrow,
             can_filter=False,
             # A vec0 table fixes its dimension at creation, which is the
             # constraint rebasis exists to work around.
             dimension_locked=True,
             supports_in_place_update=True,
-            quantized=self._element_type_is_narrow(),
+            quantized=None if element is None else narrow,
             name="sqlite-vec",
         )
 
@@ -160,20 +174,35 @@ class SqliteVecStore:
         An empty table answers ``None``. There is no row to ask about, and
         "float32" would be a guess dressed as a reading.
         """
-        if not self._quantization_checked:
-            element = self._element_type()
-            self._quantized = None if element is None else element != "float32"
-            self._quantization_checked = True
-        return self._quantized
+        element = self._element_type()
+        return None if element is None else element != "float32"
 
     def _element_type(self) -> str | None:
-        column, table = _quote(self._vector_column), _quote(self._vector_table)
-        sql = f"SELECT vec_type({column}) FROM {table} LIMIT 1"  # noqa: S608 - identifiers quoted by _quote
-        try:
-            row = self._connection.execute(sql).fetchone()
-        except sqlite3.Error:
-            return None
-        return None if row is None or row[0] is None else str(row[0])
+        if not self._element_checked:
+            column, table = _quote(self._vector_column), _quote(self._vector_table)
+            sql = f"SELECT vec_type({column}) FROM {table} LIMIT 1"  # noqa: S608 - identifiers quoted by _quote
+            try:
+                row = self._connection.execute(sql).fetchone()
+            except sqlite3.Error:
+                row = None
+            self._element = None if row is None or row[0] is None else str(row[0])
+            self._element_checked = True
+        return self._element
+
+    def _refuse_narrow(self, operation: str, reason: str) -> None:
+        """Refuse an operation this table's element type cannot support.
+
+        Raises:
+            StoreUnsupported: On an ``int8`` or ``bit`` table.
+        """
+        element = self._element_type()
+        if element is None or element == "float32":
+            return
+        raise StoreUnsupported(
+            f"This vec0 table stores {element} vectors, and `{operation}` needs float32.",
+            hint=reason,
+            context={"store_backend": "sqlite-vec", "element_type": element},
+        )
 
     def count(self) -> int:
         """Number of rows in the vector table."""
@@ -181,8 +210,31 @@ class SqliteVecStore:
         return int(self._one(sql)[0])
 
     def dimension(self) -> int:
-        """Vector dimensionality, read from the first row."""
+        """Vector dimensionality, read from the first row and its element type.
+
+        The blob's length alone does not give it. A vec0 column stores four
+        bytes per component at ``float32`` and **one** at ``int8``, so dividing
+        by four reported a quarter of the true dimension on an int8 table — and
+        every check downstream that compares an adapter's width against the
+        index would have compared against that.
+
+        ``bit`` is refused rather than computed, and that is not caution: it
+        packs one *bit* per component and ``bit[7]`` is a legal declaration, so
+        a one-byte blob is consistent with any dimension from 1 to 8. The number
+        is not in the data.
+
+        Raises:
+            StoreError: When the table is empty, so there is no row to measure.
+            StoreUnsupported: On a ``bit`` table.
+        """
         if self._dimension is None:
+            if self._element_type() == "bit":
+                self._refuse_narrow(
+                    "dimension",
+                    "A bit column packs one bit per component and `bit[7]` is legal, "
+                    "so the blob's length is consistent with several dimensions. "
+                    "`rebasis doctor --store` reports what can be read.",
+                )
             column, table = _quote(self._vector_column), _quote(self._vector_table)
             sql = f"SELECT {column} FROM {table} LIMIT 1"  # noqa: S608 - quoted by _quote
             row = self._connection.execute(sql).fetchone()
@@ -192,7 +244,7 @@ class SqliteVecStore:
                     hint="rebasis needs an existing index to measure against.",
                     context={"store_backend": "sqlite-vec"},
                 )
-            self._dimension = len(row[0]) // 4
+            self._dimension = len(row[0]) // _BYTES_PER_COMPONENT[self._element_type() or "float32"]
         return self._dimension
 
     def iter_records(
@@ -215,7 +267,7 @@ class SqliteVecStore:
             yield Record(
                 id=record_id,
                 vector=(
-                    _deserialize(row["vector"])
+                    _deserialize(row["vector"], self._element_type())
                     if with_vectors and row["vector"] is not None
                     else None
                 ),
@@ -234,6 +286,16 @@ class SqliteVecStore:
     def search(self, vector: FloatArray, k: int, where: dict[str, Any] | None = None) -> list[Hit]:
         """Nearest neighbours, via sqlite-vec's KNN syntax."""
         del where  # capabilities.can_filter is False, and says so rather than pretending
+        # Measured against the shipped extension: a float32 query against an
+        # int8 or bit column is refused — "expected to be of type int8". rebasis
+        # only produces float32, so this refuses first with the reason rather
+        # than letting a SQL error surface as "the sqlite-vec query failed".
+        self._refuse_narrow(
+            "search",
+            "sqlite-vec refuses a float32 query against a narrower column, so "
+            "`rebasis.Bridge` cannot serve this table. Reindexing it as float32 "
+            "is what would make it bridgeable.",
+        )
         query = as_float32(vector).reshape(-1)
         if query.shape[0] != self.dimension():
             raise EmbeddingDimensionMismatch(
@@ -276,7 +338,20 @@ class SqliteVecStore:
         Delete-then-insert on the same rowid rather than UPDATE: vec0 tables do
         not accept an UPDATE of the embedding column in every released version,
         and the pair inside one transaction is equivalent and portable.
+
+        Raises:
+            StoreUnsupported: On a narrower-than-float32 column, which the
+                extension itself refuses. ``capabilities.can_upsert_vectors``
+                already says so, so `migrate` stops before it opens a job; this
+                is the backstop for a caller that reached here anyway, and it
+                matters because the delete half of delete-then-insert would
+                otherwise run before the insert half failed.
         """
+        self._refuse_narrow(
+            "upsert_vectors",
+            "sqlite-vec refuses a float32 vector for a narrower column, and "
+            "rebasis produces nothing else. `migrate` cannot rewrite this table.",
+        )
         matrix = as_float32(vectors)
         if matrix.shape[1] != self.dimension():
             raise EmbeddingDimensionMismatch(
@@ -501,6 +576,44 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _deserialize(blob: bytes) -> FloatArray:
-    """Unpack sqlite-vec's raw little-endian float32."""
+#: Bytes a vec0 column spends per vector component, by the name ``vec_type()``
+#: returns. Measured against the shipped extension: a ``float[8]`` column stores
+#: 32 bytes, ``int8[8]`` stores 8, and ``bit[8]`` stores 1.
+#:
+#: ``bit`` is absent on purpose rather than recorded as ``0.125``. A fractional
+#: width would make ``len(blob) // width`` compute a number, and that number
+#: would be wrong: ``bit[7]`` is a legal declaration and stores the same single
+#: byte as ``bit[8]``, so the dimension is not recoverable from the data at all.
+#: A missing key raises where a plausible one would have lied.
+_BYTES_PER_COMPONENT = {"float32": 4, "int8": 1}
+
+
+def _deserialize(blob: bytes, element: str | None = None) -> FloatArray:
+    """Unpack a vec0 blob according to its element type.
+
+    ``float32`` is the raw little-endian bytes. ``int8`` is one signed byte per
+    component, widened to float — the scale that quantization removed is a
+    single factor across the whole vector, and every consumer here normalises,
+    so what comes back points where the stored vector points.
+
+    ``None`` means the element type could not be read, and is treated as
+    ``float32``: that is what every vec0 table created without an explicit type
+    is, and it is the behaviour this function had before it could ask.
+
+    Raises:
+        StoreUnsupported: On a ``bit`` blob, whose component count is not in the
+            data — see :data:`_BYTES_PER_COMPONENT`.
+    """
+    kind = element or "float32"
+    if kind == "int8":
+        return np.frombuffer(blob, dtype=np.int8).astype(np.float32, copy=True)
+    if kind not in _BYTES_PER_COMPONENT:
+        raise StoreUnsupported(
+            f"This vec0 table stores {kind} vectors, which rebasis cannot read back.",
+            hint=(
+                "A bit column packs one bit per component and `bit[7]` is legal, "
+                "so the number of components is not recoverable from the blob."
+            ),
+            context={"store_backend": "sqlite-vec", "element_type": kind},
+        )
     return np.frombuffer(blob, dtype="<f4").astype(np.float32, copy=True)
