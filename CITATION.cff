@@ -1,0 +1,39 @@
+# How to cite rebasis.
+#
+# GitHub reads this file to render "Cite this repository", and citation
+# managers read it directly. It is validated in CI by `tools/check_citations.py`
+# alongside the arXiv references in `docs/`, on the same principle: a citation
+# nobody can resolve is not a citation.
+#
+# There is deliberately no `version:` or `date-released:` field. `pyproject.toml`
+# derives the version from the git tag and says so — "the version is derived
+# from the git tag; it is never stored by hand" — and a second copy here would
+# be a second source that drifts, silently, in the direction of whichever one
+# nobody looked at. Cite the tag you installed; `pip show rebasis` prints it.
+cff-version: 1.2.0
+message: >-
+  If you use rebasis in academic work, please cite it using the metadata
+  below.
+title: rebasis
+abstract: >-
+  A tool that measures whether an embedding-model upgrade is worth taking,
+  fits an adapter that maps the new model's query vectors into the space an
+  existing index already uses when it is, and migrates the index safely when
+  the user is ready. The decision is grounded in the user's own corpus and
+  query log rather than in a benchmark average, and the tool recommends
+  against bridging more often than for it.
+type: software
+authors:
+  - family-names: Zengin
+    given-names: Batuhan Zorbey
+    email: batuhanzorbeyzengin@gmail.com
+repository-code: https://github.com/batuhanzorbeyzengin/rebasis
+url: https://batuhanzorbeyzengin.github.io/rebasis/
+license: Apache-2.0
+keywords:
+  - embeddings
+  - vector-database
+  - information-retrieval
+  - index-migration
+  - procrustes
+  - representation-alignment

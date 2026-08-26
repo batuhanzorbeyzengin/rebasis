@@ -67,6 +67,13 @@ jobs:
             echo "::error::docs/reference is stale. Run 'just docs-gen' and commit."
             exit 1
           }
+      - name: every arXiv citation names its paper
+        # The offline half: that `docs/citations.toml` and the committed
+        # documentation name the same set of papers. It touches no network, so it
+        # cannot go red because arXiv is down — which is the only reason a
+        # citation check is safe to put on the merge path at all. Whether the
+        # recorded titles are *true* is the weekly `citations` job's question.
+        run: uv run python tools/check_citations.py
 
   # The only job that runs the suite. It was two — a `tests` job and this one
   # — running very nearly the same tests twice, for fourteen minutes of runner
