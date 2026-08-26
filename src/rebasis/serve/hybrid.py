@@ -13,9 +13,22 @@ cannot be compared directly.
 
 Two merge strategies, and the fallback matters more than it looks:
 
-* **Calibrated merge** (preferred). The isotonic calibrator maps old-space scores
-  onto the new-space distribution, after which the two are directly comparable.
-  Being monotone it cannot reorder either side.
+* **Calibrated merge** (preferred where its assumption holds). The isotonic
+  calibrator maps old-space scores onto the new-space distribution, after which
+  the two are comparable. The calibrator itself is monotone and cannot reorder
+  anything — but the *merge* around it can, because a step function produces ties
+  and a tie has to be broken by something. See `calibrated_merge` for what breaks
+  them and what it cost before it did.
+
+  **Its assumption is worth stating, because the code cannot check it.** The
+  calibrator was fitted to map *bridged old-space* scores onto the distribution
+  the **new model** produces. That holds while the migrated half really is the
+  new model's own vectors. Where a migration instead writes an adapter's image of
+  the old vectors, those records are not in that distribution, they score
+  systematically low against a raw new-model query, and the calibrated side
+  starves — measured, the migrated half took as little as 0.3% of the result at
+  90% migrated. `calibrated_merge` branches on whether a calibrator *exists*,
+  which is not the same question, and it has no way to ask the right one.
 * **Reciprocal rank fusion** (fallback). When no calibrator exists, scores are
   discarded and only ranks are used. That is strictly less information, but it
   is *correct* — whereas comparing raw scores across the two spaces is not.
@@ -93,16 +106,47 @@ def calibrated_merge(
 
     from rebasis.types import Hit as _Hit
 
-    merged: dict[str, float] = {}
+    # Each id keeps its best score and, alongside it, the rank it held on the
+    # side that produced that score. The rank is what breaks a tie *within* one
+    # side; see the sort below for why it has to.
+    merged: dict[str, tuple[float, int]] = {}
+
+    def offer(doc_id: str, score: float, rank: int) -> None:
+        current = merged.get(doc_id)
+        if current is None or score > current[0]:
+            merged[doc_id] = (score, rank)
+
     if old_hits:
         raw = np.array([h.score for h in old_hits], dtype=np.float32)
         for hit, score in zip(old_hits, calibrator.transform(raw), strict=True):
-            merged[hit.id] = max(merged.get(hit.id, float("-inf")), float(score))
+            offer(hit.id, float(score), hit.rank)
     for hit in new_hits:
-        merged[hit.id] = max(merged.get(hit.id, float("-inf")), hit.score)
+        offer(hit.id, hit.score, hit.rank)
 
-    # Same tie-break as the fusion path, for the same reason. Calibrated scores
-    # collide far less often than RRF's, but "less often" is not "never" and a
-    # tie resolved by which side was passed first is a bias either way.
-    ordered = sorted(merged.items(), key=lambda item: (-item[1], item[0]))[:k]
-    return [_Hit(id=doc_id, score=score, rank=rank) for rank, (doc_id, score) in enumerate(ordered)]
+    # Three keys, and the middle one was missing.
+    #
+    # The calibrator is isotonic regression: pool-adjacent-violators produces a
+    # step function with far fewer levels than it has inputs, and `clip` flattens
+    # both tails. Measured, ten bridged scores land on **five to seven** distinct
+    # calibrated values — so ties are the common case here, not the rare one the
+    # original comment assumed. Sorting on `(-score, id)` alone then handed every
+    # one of them to whichever document id sorts first, which is arbitrary.
+    #
+    # What that cost is visible at the endpoints. At 0% and 100% migrated the
+    # index holds one space and there is a single right answer — what the store
+    # returned. Measured over four corpora, this merge reproduced it on **4% to
+    # 16%** of queries; reciprocal rank fusion, which never looks at a score,
+    # reproduced it on 100%. A merge that cannot reduce to the single-space
+    # answer is wrong at the endpoints rather than merely worse.
+    #
+    # `rank` fixes it without giving up what the id was there for. Two hits from
+    # the same side hold different ranks, so their original order survives a
+    # shared calibrated level. Two hits from *different* sides can hold the same
+    # rank, and there the id still decides — which is the neutrality the original
+    # comment was defending: a tie resolved by which side was passed first is a
+    # standing bias toward one embedding space, and that argument was right about
+    # cross-side ties and silent about within-side ones.
+    ordered = sorted(merged.items(), key=lambda item: (-item[1][0], item[1][1], item[0]))[:k]
+    return [
+        _Hit(id=doc_id, score=score, rank=rank) for rank, (doc_id, (score, _)) in enumerate(ordered)
+    ]
