@@ -13,11 +13,27 @@ the pool is what gets clustered. On a five-million-chunk index the pool is still
 50,000 vectors.
 
 **The store is never written to.** Every call here reads.
+
+**Embeddings are reused when the caller asks for it.** ``cache_dir`` turns on
+:mod:`rebasis.storage.embedding_cache`, which memoises the candidate model's
+output so that the second probe of a corpus does not embed it a second time —
+the most visible everyday cost in the tool. It is off unless a directory is
+given, because ``probe_store`` is importable and a library that starts writing
+into someone's project directory unasked has taken a liberty; ``rebasis probe``
+passes one, because it has already created ``.rebasis/`` for the audit trail.
+
+The cache changes what a run *costs* and must not change what it *reports*, and
+there is exactly one number where those meet: the reindex estimate is
+extrapolated from the rate this run measured, so it is measured over the
+documents actually sent to the model and omitted entirely when the cache
+answered all of them. An estimate of zero seconds would be worse than no
+estimate.
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -40,13 +56,16 @@ from rebasis.probe.groundtruth import build_tier0, build_tier1, build_tier2
 from rebasis.probe.metrics import estimate_reindex_cost
 from rebasis.probe.runner import ProbeResult, run_probe
 from rebasis.sample import SampleResult, draw_sample, split_disjoint
+from rebasis.storage.embedding_cache import open_cached_embedder
 from rebasis.store.base import require_capability
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from rebasis.audit import AuditWriter
     from rebasis.probe.groundtruth import GroundTruth
+    from rebasis.storage.embedding_cache import CachedEmbedder
     from rebasis.store.base import VectorStore
     from rebasis.types import Embedder, EncodingProfile, FloatArray
 
@@ -245,6 +264,7 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     store_uri: str = "",
     old_model: str = "",
     device: str = "cpu",
+    cache_dir: Path | str | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> tuple[ProbeResult, CorpusSample]:
     """Probe a live store: sample it, re-embed it, and decide.
@@ -255,6 +275,12 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     holds. With a real query log there is no such shortcut: the queries are text
     that was never indexed, and answering "how well does the current model do?"
     means encoding them with it.
+
+    ``cache_dir`` names a directory in which embeddings this run computes are
+    kept for the next one, one file per model profile. ``None``, the default,
+    means nothing is cached and nothing is written; ``rebasis probe`` passes
+    :func:`~rebasis.storage.default_embedding_cache_dir`. See the module
+    docstring for why the default is off here and on there.
     """
     from rebasis.compute import blas_info, measurement_precision, using_device
 
@@ -267,7 +293,16 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
         using_device(device),
         measurement_precision(),
         measure_resources(device=device, blas_threads=blas_info()[1]) as usage,
+        # Closed here because they were opened here. A clean close checkpoints
+        # each cache's write-ahead log, which leaves one file per model where
+        # `gc` expects one.
+        ExitStack() as caches,
     ):
+        new_encoder, new_cache = _with_cache(new_embedder, cache_dir, caches)
+        old_encoder: Embedder | None = None
+        if old_embedder is not None:
+            old_encoder, _ = _with_cache(old_embedder, cache_dir, caches)
+
         # Announced rather than left to one static spinner. These four stages
         # have very different durations — embedding dominates — and a display
         # that never changes cannot tell a slow stage from a wedged one.
@@ -281,9 +316,11 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
         # Timed separately from everything else because it is the one step whose
         # rate extrapolates: a full reindex is this, over the whole corpus.
         stage(f"Embedding {len(corpus):,} documents with the new model")
+        mark = _encode_mark(new_cache)
         embed_started = time.perf_counter()
-        new_doc_vectors = _encode(new_embedder, corpus.texts, kind="document")
+        new_doc_vectors = _encode(new_encoder, corpus.texts, kind="document")
         embed_seconds = time.perf_counter() - embed_started
+        embedded, model_seconds = _encode_since(new_cache, mark, len(corpus), embed_seconds)
 
         # For an asymmetric model, encode the same texts a second time the way a
         # query is encoded. That gives `auto` a second candidate list to measure
@@ -292,12 +329,12 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
         # identical and the extra pass would buy nothing.
         new_doc_vectors_as_queries = None
         if not new_embedder.profile.symmetric:
-            new_doc_vectors_as_queries = _encode(new_embedder, corpus.texts, kind="query")
+            new_doc_vectors_as_queries = _encode(new_encoder, corpus.texts, kind="query")
 
         stage("Building the ground truth")
         if query_log is not None:
             ground_truth, old_q, new_q, query_clusters = _tier1(
-                corpus, query_log, new_embedder, old_embedder, new_doc_vectors, k=k
+                corpus, query_log, new_encoder, old_encoder, new_doc_vectors, k=k
             )
             # Not for an unjudged log: there the oracle *is* the ground truth,
             # so "how does the old model score against it" measures drift, not
@@ -310,8 +347,8 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
         elif synth_queries is not None:
             ground_truth, old_q, new_q, query_clusters = _tier2(
                 corpus,
-                new_embedder,
-                old_embedder,
+                new_encoder,
+                old_encoder,
                 new_doc_vectors,
                 k=k,
                 strategy=synth_queries,
@@ -346,13 +383,21 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
             upgrade_gain=upgrade_gain,
             new_doc_vectors_as_queries=new_doc_vectors_as_queries,
             query_clusters=query_clusters,
-            reindex_cost=estimate_reindex_cost(
-                corpus.n_total,
-                seconds_per_document=embed_seconds / max(1, len(corpus)),
-                # Left None deliberately: energy is measured or omitted, never
-                # estimated. A figure derived from a nominal TDP would read as a
-                # measurement of something nobody asked the hardware.
-                watts=None,
+            # Omitted, not zeroed, when the cache answered the whole corpus:
+            # there is no rate to extrapolate from a pass that embedded nothing,
+            # and "a full reindex takes no time" is a claim this run did not
+            # measure. The same rule as `watts` two lines down — energy is
+            # measured or omitted, never estimated, because a figure derived
+            # from a nominal TDP would read as a measurement of something nobody
+            # asked the hardware.
+            reindex_cost=(
+                estimate_reindex_cost(
+                    corpus.n_total,
+                    seconds_per_document=model_seconds / embedded,
+                    watts=None,
+                )
+                if embedded
+                else None
             ),
         )
 
@@ -430,6 +475,49 @@ def record_decision(  # noqa: PLR0913 - the record needs every input it names
         outputs=result.to_dict(),
         subject=store_uri or None,
     )
+
+
+# ── the embedding cache ──────────────────────────────────────────────────────
+
+
+def _with_cache(
+    embedder: Embedder, cache_dir: Path | str | None, caches: ExitStack
+) -> tuple[Embedder, CachedEmbedder | None]:
+    """Wrap an embedder so it reuses vectors it has already computed.
+
+    Returns the embedder to encode with and the wrapper behind it — ``None``
+    whenever nothing is being cached, which is either because no directory was
+    given or because the user set ``REBASIS_EMBED_CACHE=0``. Both are needed:
+    one to encode with, and one to ask afterwards how much of the work was real.
+    """
+    if cache_dir is None:
+        return embedder, None
+    cached = open_cached_embedder(embedder, directory=cache_dir)
+    if cached is None:
+        return embedder, None
+    caches.callback(cached.close)
+    return cached, cached
+
+
+def _encode_mark(cached: CachedEmbedder | None) -> tuple[int, float]:
+    """Snapshot the counters, so one embedding pass can be measured on its own."""
+    return (0, 0.0) if cached is None else (cached.stats.encoded, cached.stats.encode_seconds)
+
+
+def _encode_since(
+    cached: CachedEmbedder | None, mark: tuple[int, float], documents: int, seconds: float
+) -> tuple[int, float]:
+    """How much of one embedding pass the model actually did.
+
+    Without a cache that is the whole pass, and the two numbers are exactly the
+    ones this has always reported. With one it is the misses, and the time spent
+    inside the model rather than the wall time of the pass — the difference is
+    the lookups that avoided the work, and charging those to the model would
+    inflate the reindex estimate by however long the cache took to answer.
+    """
+    if cached is None:
+        return documents, seconds
+    return cached.stats.encoded - mark[0], cached.stats.encode_seconds - mark[1]
 
 
 # ── sampling internals ───────────────────────────────────────────────────────

@@ -227,6 +227,14 @@ def _rerun(record: AuditRecord, *, store_uri: str, device: str) -> ProbeResult:
         strategy=str(inputs.get("strategy", "stratified")),
         k=int(inputs.get("k", 10)),
         seed=int(inputs.get("seed", 0)),
+        # No cache here, deliberately, where `probe`, `fit` and `eval` all use
+        # one. A replay exists to re-run a recorded decision and find out
+        # whether it still holds, and the one thing an embedding cache cannot
+        # detect is the thing a replay is most likely to be looking for: weights
+        # that changed behind an unchanged model id. The profile fingerprint
+        # covers every input to the encoding except that one
+        # (`EncodingProfile.fingerprint`), so a cached vector would answer with
+        # the old model and the replay would report agreement it did not verify.
     )
     return result
 

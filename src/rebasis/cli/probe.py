@@ -99,6 +99,7 @@ def probe_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI f
         write_reports,
     )
     from rebasis.probe.session import probe_store
+    from rebasis.storage import default_embedding_cache_dir
 
     query_log = load_query_log(queries) if queries is not None else None
     opened = open_target_store(store)
@@ -136,6 +137,9 @@ def probe_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI f
             store_uri=store,
             old_model=old,
             device=device,
+            # Beside the audit trail rather than in whatever directory the
+            # command was run from, so `--state-dir` moves both together.
+            cache_dir=default_embedding_cache_dir(state_dir),
             on_stage=steps.stage,
         )
 

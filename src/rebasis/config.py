@@ -34,6 +34,7 @@ ENVIRONMENT_VARIABLES: Final[dict[str, str]] = {
     "REBASIS_OTEL_ENABLED": "1 to send telemetry to YOUR OWN collector. Off by default.",
     "REBASIS_OTEL_CONSOLE": "1 to print spans to the console instead of exporting.",
     "REBASIS_CACHE_DIR": "Sample and embedding cache. Defaults to <state dir>/cache.",
+    "REBASIS_EMBED_CACHE": "0 to re-embed from scratch instead of reusing the cache.",
     "REBASIS_NO_COLOR": "1 to disable colour. NO_COLOR is honoured too.",
 }
 
@@ -101,6 +102,14 @@ class Settings:
     device: str = "auto"
     state_dir: str | None = None
     cache_dir: str | None = None
+    #: Whether ``probe`` may reuse embeddings it has already computed.
+    #:
+    #: On, because the cost it removes is paid on every run and the directory it
+    #: writes to already exists with a retention policy attached. The switch is
+    #: here rather than as a CLI flag because the reason to reach for it is
+    #: distrust — "is this number real, or did it come from a cache?" — and that
+    #: question is asked of a whole session, not of one command.
+    embed_cache: bool = True
     max_memory_bytes: int | None = None
     deterministic: bool = False
     otel_enabled: bool = False
@@ -113,6 +122,7 @@ class Settings:
             device=os.environ.get("REBASIS_DEVICE", "auto").strip() or "auto",
             state_dir=env_path("REBASIS_STATE_DIR"),
             cache_dir=env_path("REBASIS_CACHE_DIR"),
+            embed_cache=env_bool("REBASIS_EMBED_CACHE", default=True),
             max_memory_bytes=parse_memory(env_path("REBASIS_MAX_MEMORY")),
             deterministic=env_bool("REBASIS_DETERMINISTIC"),
             otel_enabled=env_bool("REBASIS_OTEL_ENABLED"),
@@ -127,6 +137,7 @@ class Settings:
             "device": self.device,
             "state_dir": self.state_dir,
             "cache_dir": self.cache_dir,
+            "embed_cache": self.embed_cache,
             "max_memory_bytes": self.max_memory_bytes,
             "deterministic": self.deterministic,
             "otel_enabled": self.otel_enabled,

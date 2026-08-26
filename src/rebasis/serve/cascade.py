@@ -80,8 +80,21 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from rebasis.serve.bridge import Bridge
+    from rebasis.storage.embedding_cache import EmbeddingCache
     from rebasis.store.base import VectorStore
     from rebasis.types import Embedder, FloatArray
+
+    def _shared_cache_is_a_vector_cache(cache: EmbeddingCache) -> VectorCache:
+        """Keep the offer made in :class:`VectorCache`'s docstring checked.
+
+        :class:`rebasis.storage.EmbeddingCache` is documented below as a
+        drop-in :class:`VectorCache`. Nothing here imports it at runtime and
+        nothing calls this; it exists so that a change on either side is a type
+        error rather than a surprise for whoever took the documentation at its
+        word.
+        """
+        return cache
+
 
 __all__ = [
     "CANDIDATES",
@@ -163,6 +176,15 @@ class VectorCache(Protocol):
 
     Keys are opaque: :class:`Cascade` builds them, and an implementation must
     treat them as bytes rather than parse them.
+
+    Three implementations ship. :class:`MemoryVectorCache` is the default and
+    :class:`DiskVectorCache` survives a restart;
+    :class:`rebasis.storage.EmbeddingCache` — the store ``probe`` uses to
+    remember what it has already embedded — satisfies this protocol as it
+    stands, and is the one to reach for when the working set is large enough
+    that a directory of small files starts to cost something. It keeps a single
+    SQLite file and writes a candidate set in one transaction, where
+    :class:`DiskVectorCache` writes one fsynced file per document.
     """
 
     def get(self, keys: Sequence[str]) -> dict[str, FloatArray]:
@@ -239,6 +261,18 @@ class DiskVectorCache:
     entry that queries are still hitting; the cost of that is re-embedding one
     document once a month, against one write syscall per cache *hit* to prevent
     it. Turning every read into a write to defend a cache is the wrong trade.
+
+    **Why this exists alongside** :class:`rebasis.storage.EmbeddingCache`, which
+    solves a near-identical problem: the two are the same idea at opposite
+    scales, and merging them would have made one of them worse. Here a query
+    touches a hundred documents and entries accumulate lazily over a query log,
+    so a small file per vector needs no schema and no connection and lets `gc`
+    expire one document at a time. ``probe`` embeds ten thousand documents in a
+    single pass, where a file per vector is ten thousand files for `gc` to
+    ``stat`` and ten thousand fsyncs to pay. They also key different things —
+    record ids here, texts there — and expire on different clocks. Either can be
+    handed to :class:`Cascade`; a process whose working set has grown past what
+    a directory of small files handles comfortably should hand it the other one.
 
     Args:
         directory: Where to keep the files. Defaults to
