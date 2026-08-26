@@ -28,7 +28,9 @@ caveat.
 
 Each of these runs the full migrate-and-rollback suite on every commit: the
 vectors actually change, the record count does not, text survives, and `rollback`
-restores the originals byte for byte.
+restores the originals byte for byte. "The originals" means something narrower
+on a store that keeps compressed codes rather than vectors — *If your index is
+stored quantized*, below, is what rebasis detects and what it then says.
 
 | Backend | Migrate | Notes |
 |---|---|---|
@@ -68,10 +70,23 @@ kept it".
 
 ## Running it
 
+`migrate` needs an adapter pointing **out** of the index, not into it. That is
+the one thing it cannot be run without, and until this release nothing produced
+one — so the documented sequence handed it the query map instead, and every guard
+the tool had let that through. The reasoning is in [what changed](#what-changed-and-why),
+below; the short version is that an index rewritten with a query map answers
+recall@1 **0.000** to every query type there is.
+
 ```bash
-rebasis migrate \
-  --adapter adapter.rbs \
-  --store chroma:///path/to/db#documents
+# The map migrate needs. Note --direction; without it `fit` produces the
+# query-side map, which `Bridge` serves with and `migrate` now refuses.
+rebasis fit \
+  --store chroma:///path/to/db#documents \
+  --old <old-model> --new <new-model> \
+  --direction old_to_new \
+  --out forward.rbs
+
+rebasis migrate --adapter forward.rbs --store chroma:///path/to/db#documents
 ```
 
 It shows what it will do — how many records, which store, which adapter, which
@@ -95,6 +110,56 @@ Useful flags:
 | `--priority access --access-log log.jsonl` | Migrate what you actually read first, so quality improves where you will notice. |
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
 | `--resume <job-id>` | Continue an interrupted job. |
+
+### Whether to run it at all
+
+Measured across 51 runs on seventeen corpora with human relevance judgements
+([the band](../migration-band.md)):
+
+| | |
+|---|---|
+| a completed migration delivers | **0.727** of a full reindex, on average |
+| bridging, on the same runs | **0.719** |
+| the two track each other at | Spearman **0.993** |
+| migrating beat leaving the index alone in | **5 of 51** |
+
+So migrating and bridging are worth the same amount, and both are usually worth
+less than doing nothing. That is
+[ADR 10](../adr/0010-retention-is-bounded-by-the-source.md) reaching the document
+side: the same source space under the same family of map carries the same
+amount, whichever end you apply it to.
+
+**What migrating buys is the adapter leaving the query path** — no map on the hot
+path, no `.rbs` to ship with your service, and the new model querying its own
+space. What it costs is rewriting every vector, the shadow copy behind it, and a
+window in which the index holds two spaces. Choose on those grounds; quality is
+not one of them.
+
+### What changed, and why
+
+An adapter has a direction, and the two are mirror images:
+
+| direction | maps | used by |
+|---|---|---|
+| `query_to_old` | a new-model **query** into the index | `rebasis.Bridge` |
+| `old_to_new` | the **stored vectors** into the new model's space | `rebasis migrate` |
+
+`rebasis fit` produced only the first, `migrate` never checked, and the README
+showed one being piped into the other. Applying the query map to document vectors
+passed every guard: the write landed, the count held, the text survived, the
+read-back compared what was written against what came back, and the index-health
+check measured the store's search against exact kNN over the vectors it now held.
+None of those asks whether the vectors still mean anything.
+
+Measured on data where both spaces are known exactly and the bridge itself scores
+recall@1 1.000 against the untouched index, the index a completed migration left
+behind answered **0.000** to a raw new-model query, **0.000** to a bridged query
+and **0.000** to an old-model query. Where the two models have the same width it
+failed silently; where they differ it failed with a dimension error at query time,
+which is why it survived on some ladders and not others.
+
+Both directions are now guarded. `migrate` refuses a `query_to_old` adapter before
+it opens the store, and `Bridge.load` refuses an `old_to_new` one.
 
 ## Stopping short leaves two spaces in one index
 
@@ -207,6 +272,94 @@ a normalising store they would find it false.
 
 The job records which store it wrote to, so you do not have to remember the URI
 months later — which is when a rollback is actually wanted.
+
+## If your index is stored quantized
+
+Everything above assumes the store keeps what it is given. Increasingly it does
+not: int8 scalar quantization, product quantization and binary codes are how a
+large index is made to fit, and a store that holds a code cannot hand back the
+vector the code was made from.
+
+`migrate` checks before it writes anything and says so in the plan, above the
+confirmation. It does not refuse. A quantized index is a deliberate engineering
+choice and migrating one is a legitimate thing to want; what you would not have
+without the check is a correct reading of the paragraph above.
+
+**What the shadow copy holds.** rebasis shadows what the store *returns*, and a
+quantized store returns a value decoded from its stored code. The shadow is
+still bit-identical — to that decoded view. It is not a copy of the vectors your
+embedding model produced; those stopped being retrievable when the collection
+was built.
+
+**What `rollback` therefore restores.** The state the migration replaced,
+exactly: the vectors this collection read back the moment before `migrate`
+started. It does not recover precision the collection had already spent.
+
+**It can stop the run.** After every batch `migrate` re-reads a sample and
+compares it to what it sent, to `VERIFY_ATOL` — the constant is in
+`src/rebasis/migrate/engine.py`, and `migrate --dry-run` prints whatever it
+currently is rather than a figure copied into prose. That check exists to catch
+a store that accepts a write and does not keep it; a store that re-encodes on
+write fails it for a different reason. Measured in
+`tests/integration/test_quantized_roundtrip.py`, an 8-bit scalar-quantized FAISS
+index deviates by more than that tolerance in both directions — so on a codec
+that coarse the job stops on its first batch, with the shadow copy already
+written and nothing lost.
+
+### What each backend reports
+
+`StoreCapabilities.quantized` has three values, and the third is the point.
+`False` is a promise that what you write is what you read back; a backend that
+answered `False` without looking would be making a guarantee it could not keep.
+So the default is `None` — *not determinable* — and that is what a third-party
+store behind the LangChain or LlamaIndex bridge honestly is.
+
+| Backend | Read from | Reports |
+|---|---|---|
+| `faiss` | `sa_code_size()` against `4 × d`, through the `IndexIDMap2` wrapper | `True` for PQ, scalar-quantized, LSH and friends; `False` for a flat index |
+| `sqlite-vec` | `vec_type()` on a stored vector | `float32` → `False`; `int8` and `bit` → `True`; empty table → `None` |
+| `qdrant` | `VectorParams.datatype` in the collection config | `float16`, `uint8`, `turbo4` → `True`; otherwise `False` |
+| `lancedb` | the Arrow element type of the vector column | narrower than 32 bits → `True` |
+| `chroma` | nothing to read | `False` |
+| `memory` | nothing to read | `False` |
+
+Two of those answers are deliberately narrower than they first look, and both
+are worth knowing if you go looking for a warning that does not appear.
+
+**Qdrant's `quantization_config` is not this.** Qdrant builds the quantized
+codes *beside* the vectors rather than instead of them — which is what makes its
+own rescoring possible — so a scalar- or binary-quantized Qdrant collection
+still returns the original vector, and `rollback` on one is exact. Qdrant draws
+the line itself: "datatypes are distinct from the quantization feature.
+Quantization creates a separate quantized representation of vectors alongside
+the original ones, while datatypes determine the representation of the original
+vectors themselves." So it is `datatype` that rebasis reads.
+
+**LanceDB's `IVF_PQ` is not this either.** The compressed copy lives in the
+index's own columns and the vector column is untouched, which is why LanceDB
+documents `bypass_vector_index` as a way to get ground-truth results. What does
+change the round trip there is a vector column that is not float32 — `uint8`
+columns are a supported way to store binary embeddings — and that is what is
+read.
+
+**FAISS is the one where a quantized index used to pass silently.** rebasis
+already refuses a FAISS index it cannot reconstruct from, but that catches only
+the ones where `reconstruct` *raises*, such as an IVF index with no direct map.
+An `IndexPQ` or an `IndexScalarQuantizer` reconstructs happily and returns a
+decode. Those are now declared rather than refused.
+
+### Reading it from a script
+
+`migrate` has no `--json`. The finding is written into the audit trail with the
+job, as `store_quantized` among the inputs of the `migrate.job.started` record:
+
+```bash
+rebasis audit export --out trail.jsonl
+jq 'select(.action == "migrate.job.started") | .inputs.store_quantized' trail.jsonl
+```
+
+`true`, `false` and `null` are three different answers there, and `null` means
+the store could not be asked — not that it keeps what it is given.
 
 ## `--no-keep-original`
 

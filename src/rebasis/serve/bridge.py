@@ -42,6 +42,39 @@ if TYPE_CHECKING:
 __all__ = ["Bridge"]
 
 
+def _refuse_the_wrong_direction(manifest: AdapterManifest, path: Path) -> None:
+    """A bridge maps queries. An adapter that maps documents cannot serve one.
+
+    The two directions are mirror images and each is useless in the other's
+    place. ``query_to_old`` carries a new-model *query* into the index, which is
+    what leaves the index untouched and is what this class is for.
+    ``old_to_new`` carries the *stored document vectors* forward, which is what
+    `rebasis migrate` rewrites an index with.
+
+    Applying the migration map to a query produces a vector in neither space.
+    Nothing downstream would notice: the dimensions agree, the search runs, and
+    what comes back is a ranking with no relationship to the question. That is
+    exactly how the mirror-image mistake went unnoticed on the other side —
+    `migrate` accepted a query map and rewrote indexes with it until it was
+    measured at recall@1 0.000 — so this guard exists before the adapters it
+    refuses do.
+    """
+    if manifest.direction == "query_to_old":
+        return
+    from rebasis.errors import IncompatibleAdapter
+
+    raise IncompatibleAdapter(
+        f"{path.name} maps the index's own vectors forward "
+        f"(direction={manifest.direction!r}); a bridge needs the reverse, which "
+        "maps a new-model query into the index.",
+        hint=(
+            "That adapter is for `rebasis migrate`. For serving, fit one with "
+            "`rebasis fit` and no `--direction`, which produces `query_to_old`."
+        ),
+        context={"direction": manifest.direction, "adapter": path.name},
+    )
+
+
 class Bridge:
     """Maps new-model query vectors into an existing index's space."""
 
@@ -90,6 +123,7 @@ class Bridge:
             expected_new=expected_new,
             verify=verify,
         )
+        _refuse_the_wrong_direction(manifest, _Path(path))
         return cls(adapter, manifest, calibrator)
 
     def to_index_space(self, vectors: FloatArray, *, normalize: bool = True) -> FloatArray:

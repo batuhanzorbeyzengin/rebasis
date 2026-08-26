@@ -265,6 +265,7 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     old_model: str = "",
     device: str = "cpu",
     cache_dir: Path | str | None = None,
+    fit_migration: bool = False,
     on_stage: Callable[[str], None] | None = None,
 ) -> tuple[ProbeResult, CorpusSample]:
     """Probe a live store: sample it, re-embed it, and decide.
@@ -281,6 +282,12 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     means nothing is cached and nothing is written; ``rebasis probe`` passes
     :func:`~rebasis.storage.default_embedding_cache_dir`. See the module
     docstring for why the default is off here and on there.
+
+    ``fit_migration`` adds a second fit in the opposite direction — the map
+    `rebasis migrate` rewrites an index with — scored on what a *completed*
+    migration would deliver rather than on what a bridged query retrieves. Off
+    by default because the two are different questions and most runs are asking
+    the first; see :mod:`rebasis.probe.migration`.
     """
     from rebasis.compute import blas_info, measurement_precision, using_device
 
@@ -404,6 +411,23 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     # Outside the measured block: the summary describes the work, and writing
     # it down is not part of the work.
     result.resources = usage.summary.to_dict()
+
+    if fit_migration:
+        # After the timed block on purpose. This is a second fit over the same
+        # pairs, and folding it into the resource summary would make a `probe`
+        # that asked for it look more expensive than the one a user compares it
+        # against. The reindex-cost rate would be wrong for the same reason.
+        from rebasis.probe.migration import fit_migration_adapter
+
+        result.migration = fit_migration_adapter(
+            old_doc_vectors=corpus.old_vectors,
+            new_doc_vectors=new_doc_vectors,
+            new_query_vectors=new_q,
+            ground_truth=ground_truth,
+            fit_indices=corpus.fit_positions,
+            k=k,
+            methods=methods,
+        )
 
     if audit is not None:
         record_decision(

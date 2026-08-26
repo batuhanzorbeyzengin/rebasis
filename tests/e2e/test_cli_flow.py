@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -22,6 +23,9 @@ from rebasis.cli import app
 from rebasis.core import l2_normalize
 from rebasis.errors import EXIT_OK, EXIT_USAGE
 from rebasis.store import MemoryStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.e2e
 
@@ -86,6 +90,23 @@ def _precomputed_embedders(corpus, monkeypatch):  # type: ignore[no-untyped-def]
 
     monkeypatch.setattr("rebasis.embed.registry.open_embedder", fake_open)
     monkeypatch.setattr("rebasis.embed.open_embedder", fake_open, raising=False)
+
+
+def forward_adapter(corpus, out) -> Path:  # type: ignore[no-untyped-def]
+    """A migratable adapter, through the command that produces one.
+
+    `migrate` rewrites the **indexed document vectors**, so it needs a map out of
+    the index's space and into the new model's — ``old_to_new``. `Bridge` needs
+    the reverse. Each is useless in the other's place and both guards now say so.
+
+    This goes through `rebasis fit --direction old_to_new` rather than
+    constructing an adapter directly, because the point of these tests is the
+    path a user takes. It replaces a helper that built one by hand, which existed
+    only for the window in which nothing could produce a forward map at all.
+    """
+    result = runner.invoke(app, fit_args(corpus, out, "--direction", "old_to_new"))
+    assert result.exit_code == EXIT_OK, result.output
+    return out
 
 
 def probe_args(corpus, *extra: str) -> list[str]:  # type: ignore[no-untyped-def]
@@ -259,13 +280,51 @@ class TestFitAndMigrate:
         assert result.exit_code == EXIT_OK, result.output
         assert "verified" in result.output
 
+    def test_migrate_refuses_the_adapter_fit_produces(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """The one path a user is most likely to take, and it has to be refused.
+
+        `README` and the migration guide both show `fit` writing an adapter and
+        `migrate` taking it. That adapter maps a new-model *query* into the
+        index; `migrate` rewrites the indexed *documents* and needs the reverse.
+        Applying the query map to document vectors succeeds at every level that
+        checks anything — the write lands, the count holds, the text survives,
+        the read-back compares what was written against what came back, and the
+        index-health check measures the store's search against exact kNN over
+        the vectors it now holds. Measured on synthetic data where both spaces
+        are known and the bridge itself scores 1.000, the index left behind
+        answers recall@1 **0.000** to a raw new-model query, a bridged query and
+        an old-model query alike.
+
+        Nothing else in the suite catches it, which is why this is here.
+        """
+        out = corpus["tmp"] / "adapter.rbs"
+        fitted = runner.invoke(app, fit_args(corpus, out))
+        assert fitted.exit_code == EXIT_OK, fitted.output
+        before = _vectors(corpus)
+
+        refused = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--yes",
+            ],
+        )
+
+        assert refused.exit_code == EXIT_USAGE, refused.output
+        assert "query_to_old" in refused.output
+        # Refused before anything was written, not part-way through.
+        np.testing.assert_array_equal(_vectors(corpus), before)
+
     def test_migrate_then_rollback_restores_the_index(self, corpus) -> None:  # type: ignore[no-untyped-def]
         """The shadow copy returns the vectors bit for bit."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(
-            app,
-            fit_args(corpus, out),
-        )
+        forward_adapter(corpus, out)
         before = _vectors(corpus)
 
         migrated = runner.invoke(
@@ -306,7 +365,7 @@ class TestFitAndMigrate:
         "no change"; what is being tested is that the question gets asked.
         """
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         result = runner.invoke(
             app,
@@ -329,7 +388,7 @@ class TestFitAndMigrate:
         """It costs two scans of the collection, which on a large index is a
         real amount of time to spend on a diagnostic."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         result = runner.invoke(
             app,
@@ -358,7 +417,7 @@ class TestFitAndMigrate:
         plainly that the rebuild was not available.
         """
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         result = runner.invoke(
             app,
@@ -387,7 +446,7 @@ class TestFitAndMigrate:
         this covers the thing a user would actually run into.
         """
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         migrated = runner.invoke(
             app,
@@ -418,7 +477,7 @@ class TestFitAndMigrate:
         warning has to stop — a notice that never clears is one people learn to
         ignore before the day it matters."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
         runner.invoke(
             app,
             [
@@ -455,7 +514,7 @@ class TestFitAndMigrate:
         the adapter path and store URI are least likely to still be to hand.
         Both are on the job; `--resume` reads them back."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         started = runner.invoke(
             app,
@@ -489,7 +548,7 @@ class TestFitAndMigrate:
         """Jobs written before the adapter path was recorded have an empty one.
         The remedy is to pass --adapter, and saying that beats a stack trace."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
         runner.invoke(
             app,
             [
@@ -522,10 +581,7 @@ class TestFitAndMigrate:
 
     def test_status_reports_the_job(self, corpus) -> None:  # type: ignore[no-untyped-def]
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(
-            app,
-            fit_args(corpus, out),
-        )
+        forward_adapter(corpus, out)
         runner.invoke(
             app,
             [
@@ -571,7 +627,7 @@ class TestNonInteractiveUse:
         reached the unexpected-error boundary and told the user their perfectly
         normal invocation was a bug in rebasis, with an issue link."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
 
         result = runner.invoke(
             app,
@@ -594,7 +650,7 @@ class TestNonInteractiveUse:
     def test_dry_run_writes_nothing(self, corpus) -> None:  # type: ignore[no-untyped-def]
         """The plan, and then nothing. `-n` is the flag people reach for."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
         before = _vectors(corpus)
 
         result = runner.invoke(
@@ -640,7 +696,7 @@ class TestMachineReadableOutput:
     def test_status_json_carries_the_untruncated_job_id(self, corpus) -> None:  # type: ignore[no-untyped-def]
         """The table renders `job-daf2ac…`, which cannot be passed to rollback."""
         out = corpus["tmp"] / "adapter.rbs"
-        runner.invoke(app, fit_args(corpus, out))
+        forward_adapter(corpus, out)
         runner.invoke(
             app,
             [

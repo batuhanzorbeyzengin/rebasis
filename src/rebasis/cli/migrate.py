@@ -140,6 +140,9 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
         )
 
     loaded, manifest, _ = load_adapter(adapter)
+    # Before the store is even opened: this one needs nothing but the manifest,
+    # and the cheapest refusal is the one that happens first.
+    _check_direction(manifest, adapter)
     opened = open_target_store(store)
     require_capability(opened, "can_upsert_vectors", operation="migrate")
     _check_dimensions(opened, loaded)
@@ -207,6 +210,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
         console.print()
         console.print(budget.render())
         _note_background_reindex(opened)
+        _note_quantized_store(opened, dry_run=dry_run)
         console.print()
         enforce_budget(budget, directory)
 
@@ -369,6 +373,64 @@ def _note_background_reindex(store: VectorStore) -> None:
         "is not in the estimate above, and some of it continues after the run "
         "finishes.[/dim]"
     )
+
+
+def _note_quantized_store(store: VectorStore, *, dry_run: bool) -> None:
+    """Say what rollback is worth here, on a store that does not keep what it is given.
+
+    It does not refuse, and it is not asking a question. A quantized index is a
+    deliberate engineering choice and its owner has as much right to migrate it
+    as anyone; what they do not have without this is a correct reading of the
+    sentence `rollback` is sold on. So the plan states the difference and the
+    run continues.
+
+    **What changes.** rebasis shadows what the store *returns*, and a store that
+    quantizes returns a value decoded from its stored code rather than the value
+    that was written to it. The shadow is still bit-identical — to that decoded
+    view. `rollback` therefore restores the vectors this collection reads back
+    today, which is the state the migration replaced; it does not recover
+    precision the collection had already spent before rebasis was involved.
+
+    Three states, and the third is handled differently on purpose.
+    ``False`` says nothing, because there is nothing to say. ``True`` says it
+    every time. ``None`` — the store could not be asked — is not a finding, and
+    a caveat printed on every unknown is a caveat nobody reads; it appears only
+    under `--dry-run`, which is where the user has explicitly asked for
+    everything the plan knows.
+    """
+    quantized = store.capabilities.quantized
+    if quantized is None:
+        if dry_run:
+            console.print(
+                "  [dim]Whether this backend stores its vectors quantized could not be "
+                "determined, so the rollback guarantee above is the one for a store "
+                "that keeps what it is given.[/dim]"
+            )
+        return
+    if not quantized:
+        return
+
+    console.print(
+        "  [yellow]This collection stores its vectors quantized.[/yellow] [dim]rebasis "
+        "reads the store's decoded view of them, and that view is what the shadow "
+        "copy holds — so `rollback` restores what this collection reads back today, "
+        "not what your embedding model produced. That gap was there before rebasis "
+        "ran.[/dim]"
+    )
+    if dry_run:
+        # The tolerance is interpolated, never spelled out. It is a constant in
+        # the engine, and a second copy of it here is the copy nobody updates —
+        # the message would go on quoting a number the check no longer uses.
+        from rebasis.migrate.engine import VERIFY_ATOL
+
+        console.print(
+            "  [dim]The same applies going the other way: each migrated vector is "
+            "re-encoded on write, so what the index ends up holding is an "
+            "approximation of what the adapter produced. `migrate` re-reads a sample "
+            "of every batch and compares it to what it sent, to a tolerance of "
+            f"{VERIFY_ATOL:.0e} — a store whose codec is coarser than that will fail "
+            "the check and stop the job, with the shadow copy already written.[/dim]"
+        )
 
 
 def _report_aftermath(  # noqa: PLR0913 - one argument per thing the run left behind
@@ -534,6 +596,55 @@ def _resume_defaults(
             context={"job_id": job_id},
         )
     return recovered_adapter, recovered_store
+
+
+def _check_direction(manifest: AdapterManifest, adapter_path: Path) -> None:
+    """Refuse an adapter that maps the wrong way, before anything is written.
+
+    An adapter has a direction and `migrate` needs the one that is not produced.
+    `fit` writes ``query_to_old``: a map from the **new** model's space into the
+    index's, which is what lets `Bridge` send a new-model query at an untouched
+    index. `migrate` does the opposite job — it rewrites the **indexed document
+    vectors** — and for that it needs ``old_to_new``, a map out of the index's
+    space and into the new model's.
+
+    Handing it the query map applies a function outside its domain, and nothing
+    downstream notices: the write succeeds, the count is right, the text
+    survives, the read-back verifies (it compares what was written against what
+    comes back, not against anything meaningful), and `migrate`'s own index
+    health check measures the store's search against exact kNN *over the vectors
+    it now holds*, which is a property of the index structure rather than of the
+    vectors' meaning. Every existing guard passes. The index is destroyed.
+
+    **Measured**, on 4,000 synthetic documents where both spaces are known
+    exactly and the bridge itself scores 1.000 against the untouched index: the
+    index a completed migration leaves behind answers at recall@1 **0.000** to a
+    raw new-model query, **0.000** to a bridged query and **0.000** to an
+    old-model query. There is no query that is correct against it. For an
+    orthogonal adapter the arithmetic says why — ``A(q)·A(d) = q·d``, so a
+    bridged query against a fully migrated index reduces to the naive swap.
+
+    ``rebasis fit --direction old_to_new`` produces the map this needs, and the
+    check stays because the two files are indistinguishable from the outside: an
+    `.rbs` is an `.rbs`, both directions are the same shape, and the wrong one
+    fails silently rather than loudly. The direction is recorded in the manifest
+    precisely so that something can read it before the write.
+    """
+    from rebasis.errors import ConfigError
+
+    if manifest.direction == "old_to_new":
+        return
+    raise ConfigError(
+        f"{adapter_path.name} maps queries into the index's space "
+        f"(direction={manifest.direction!r}); `migrate` rewrites the indexed "
+        "vectors and needs a map in the opposite direction.",
+        hint=(
+            "Re-fit with `rebasis fit --direction old_to_new`, which produces "
+            "the map `migrate` needs. This adapter is the one `rebasis.Bridge` "
+            "serves with — it maps queries, and it leaves the index untouched."
+        ),
+        context={"direction": manifest.direction, "adapter": adapter_path.name},
+    )
 
 
 def _check_dimensions(store: VectorStore, adapter: BaseAdapter) -> None:
@@ -774,6 +885,12 @@ def rollback_command(
     upsert — exact for a store that stores what it is given, and within one
     float32 ulp for one that normalises on write, such as Chroma in cosine
     space.
+
+    On a store that quantizes, "the original" means something narrower and
+    `migrate` says so before it writes: the shadow holds the store's own decoded
+    view of its vectors, because that is what it returned when they were read,
+    so this restores the state the migration replaced rather than the vectors
+    the embedding model produced.
     """
     from rebasis.cli._pipeline import audit_writer_for, open_target_store
     from rebasis.errors import ConfigError

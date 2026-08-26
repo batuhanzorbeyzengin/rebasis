@@ -20,6 +20,18 @@ def fit_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI fla
     store: Annotated[str | None, typer.Option("--store", help="Store URI")] = None,
     old: Annotated[str | None, typer.Option("--old", help="Model the index was built with")] = None,
     new: Annotated[str | None, typer.Option("--new", help="Model you are adopting")] = None,
+    direction: Annotated[
+        str,
+        typer.Option(
+            "--direction",
+            help=(
+                "query_to_old (default) maps a new-model query into the index, "
+                "which is what `Bridge` serves with and leaves the index "
+                "untouched. old_to_new maps the indexed vectors forward, which "
+                "is the only kind `migrate` can rewrite an index with"
+            ),
+        ),
+    ] = "query_to_old",
     method: Annotated[
         str,
         typer.Option(
@@ -84,12 +96,23 @@ def fit_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI fla
     from rebasis.cli._profiles import resolve_profile
     from rebasis.core import save_adapter
     from rebasis.probe.session import probe_store
+    from rebasis.storage import default_embedding_cache_dir
 
     if store is None or old is None or new is None:
         raise ConfigError(
             "`fit` needs --store, --old and --new.",
             hint="`rebasis fit --store chroma:///db#docs --old <model> --new <model> --out a.rbs`",
         )
+
+    if direction not in {"query_to_old", "old_to_new"}:
+        raise ConfigError(
+            f"--direction takes query_to_old or old_to_new, not {direction!r}.",
+            hint=(
+                "query_to_old is what `rebasis.Bridge` serves with; old_to_new "
+                "is what `rebasis migrate` rewrites an index with."
+            ),
+        )
+    forward = direction == "old_to_new"
 
     methods = None if method == "auto" else [method]
     opened = open_target_store(store)
@@ -125,9 +148,22 @@ def fit_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI fla
             seed=seed,
             methods=methods,
             device=device,
+            # `probe` then `fit` on the same collection is the ordinary
+            # sequence, and it embeds the same documents with the same model
+            # twice. This is where that stops.
+            cache_dir=default_embedding_cache_dir(state_dir),
+            fit_migration=forward,
         )
 
-    if result.adapter is None:
+    # `result.migration` is present exactly when `fit_migration` was asked for,
+    # which is exactly `forward` — but mypy cannot see that, and neither can a
+    # reader in six months, so the check is written rather than asserted.
+    chosen = (
+        result.migration.adapter
+        if forward and result.migration is not None
+        else (None if forward else result.adapter)
+    )
+    if chosen is None:
         raise ConfigError(
             "No adapter could be fitted from this collection.",
             hint="Try `--method procrustes`, which needs the fewest pairs.",
@@ -135,12 +171,16 @@ def fit_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI fla
         )
 
     written = save_adapter(
-        result.adapter,
+        chosen,
         out,
-        direction="query_to_old",
+        direction=direction,  # type: ignore[arg-type]
         old_profile=old_profile,
         new_profile=new_embedder.profile,
-        calibrator=result.calibrator,
+        # The calibrator maps *bridged* scores onto the new model's
+        # distribution. After a migration there is no bridged score — the query
+        # is raw and the documents have moved — so carrying one forward would
+        # ship a correction for a configuration this adapter cannot be used in.
+        calibrator=None if forward else result.calibrator,
         evaluation=result.to_dict(),
     )
 

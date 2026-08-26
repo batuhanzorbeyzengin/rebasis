@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
     from rebasis.core.geometry import GeometryBound
     from rebasis.core.selection import AdapterCandidate
+    from rebasis.probe.migration import MigrationFit
     from rebasis.types import FloatArray
 
 __all__ = ["CandidateMetrics", "ProbeResult", "evaluate_candidate", "run_probe"]
@@ -160,6 +161,15 @@ class ProbeResult:
     #: alignment error that bounds. Computed before any adapter is fitted, from
     #: one Gram-matrix difference — see `rebasis.core.geometry`.
     geometry: GeometryBound | None = None
+    #: The `old_to_new` map, where one was asked for. Absent by default: it is a
+    #: second fit over the same pairs and most runs do not need it, because most
+    #: runs are deciding whether to *bridge* rather than how to migrate.
+    #:
+    #: A separate field rather than a second entry in `candidates`, because it is
+    #: a different quantity scored on a different question — `probe/migration.py`
+    #: has the reasoning — and putting the two in one list would invite a reader
+    #: to compare numbers that do not compare.
+    migration: MigrationFit | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialisable form, for the report and the audit record."""
@@ -168,6 +178,7 @@ class ProbeResult:
             "best_adapter": self.best.to_dict(),
             "candidates": [c.to_dict() for c in self.candidates],
             "baselines": {k: round(v, 4) for k, v in self.baselines.items()},
+            **({"migration": self.migration.to_dict()} if self.migration is not None else {}),
             "tier": self.ground_truth_tier,
             "n_documents": self.n_documents,
             "n_queries": self.n_queries,
