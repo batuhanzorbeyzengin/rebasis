@@ -183,6 +183,13 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
                 f'<td class="num">{result.baselines["unadapted"]:.3f}</td>'
                 "<td>Feed new vectors straight into the old index</td></tr>"
             )
+        if "reachable_ceiling" in result.baselines:
+            parts.append(
+                f"<tr><td><em>Ceiling &mdash; nothing reaches this</em></td>"
+                f'<td class="num"><em>{result.baselines["reachable_ceiling"]:.3f}</em></td>'
+                "<td><em>The best any query-side map could do in this index</em>"
+                "</td></tr>"
+            )
         parts.append("</table></div>")
 
     parts.extend(["<h3>Every adapter that was tried</h3>", '<div class="wrap"><table>'])
