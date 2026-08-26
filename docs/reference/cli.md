@@ -135,6 +135,7 @@ Fit an adapter and write a `.rbs` file. Reads the index; never writes to it.
 | `--out` | required | Where to write the adapter |
 | `--store`, `--old`, `--new` | required | As for `probe` |
 | `--method` | auto | `auto`, or one adapter type |
+| `--direction` | `query_to_old` | Which way the map points. `query_to_old` is what [`Bridge`](../concepts/adapters.md) serves with; `old_to_new` is what [`migrate`](#rebasis-migrate) rewrites the index with, and it is fitted and scored on a different question — see [what a completed migration is worth](../migration-band.md) |
 | `--pairs` | 4000 | Matched pairs to fit on. Measured to saturate near 4000. |
 | `--heldout` | 1000 | Held out to score candidates on |
 | `--state-dir` | `./.rebasis` | Where the audit trail lives — `fit` records which adapter won and on what evidence |
@@ -170,7 +171,7 @@ rebasis is not part of, and try `--limit` on a slice first. See
 | `--access-log` | — | JSONL of `{"id": ..., "count": ...}` |
 | `--keep-original/--no-keep-original` | keep | Shadow copy for rollback |
 | `--power-aware/--no-power-aware` | on | Pause on low battery |
-| `--resume` | — | Continue an existing job id. Recovers `--adapter` and `--store` from the job |
+| `--resume` | — | Continue an existing job id. Recovers `--adapter` and `--store` from the job. `rebasis resume JOB_ID` is the same thing under the verb that pairs with `pause` |
 | `--health-check/--no-health-check` | on | Measure what the index's own search returns against exact kNN, before and after |
 | `--rebuild-index` | off | When the run finishes, ask the store to rebuild its search structure |
 | `--dry-run`, `-n` | off | Print the plan and stop |
@@ -211,6 +212,39 @@ collection holding **both models' vectors**, and no query is correct against all
 of it until the job finishes. `migrate` says so before the confirmation and
 again on the way out; `status` says so until it is resolved.
 [What that means](../guides/migration.md#stopping-short-leaves-two-spaces-in-one-index).
+
+## `rebasis pause` · `resume`
+
+```bash
+rebasis pause JOB_ID [--state-dir DIR]     # takes no lock; safe during a migration
+rebasis resume JOB_ID [--yes] [--limit N] [--batch N] [--max-memory 2GB]
+                      [--power-aware/--no-power-aware]
+                      [--health-check/--no-health-check] [--rebuild-index]
+```
+
+`pause` asks a running job to stop **after its current batch** and returns
+immediately; the job stops a moment later. Killing the process was already safe
+— the queue is the checkpoint and a shadow is written before the vector it
+copies is overwritten — but it leaves the store holding a batch nobody verified,
+and a stop at a batch boundary does not.
+
+Like `status`, it takes no lock. The migration it is interrupting holds the
+state lock for its whole run, so a command that waited for the lock would wait
+for the thing it is trying to stop. What makes that safe is that `pause` writes
+one column nothing else writes: it records a *request*, and only the engine ever
+says what state a job is in. `status` shows an outstanding request as
+`running (pausing)`, and `--json` carries it as a separate `pause_requested`
+field so a script branching on `state == "running"` keeps working.
+
+A request never outlives the run it was made for. It is cleared when a run ends
+and again when one starts, so a request left behind by a killed process cannot
+silently pause the next run.
+
+`resume` continues a job from where it stopped, recovering the adapter and store
+URI from the job row. It is `migrate --resume JOB_ID`, forwarded — only the
+flags that describe *this run* are accepted. `--priority` and `--access-log` are
+not among them: they order the queue, the queue was ordered when the job was
+created, and re-ordering half a migration would be a different job.
 
 ## `rebasis status` · `rollback` · `gc`
 
@@ -279,8 +313,33 @@ ones. It is where `RB-E2003` sends you.
 
 ## `rebasis doctor`
 
+```bash
+rebasis doctor [--store URI] [--json] [--state-dir DIR]
+```
+
 What rebasis can see: backends, embedders, devices, BLAS threads, log level,
 telemetry. Written to work in the most broken environment — run it first.
 `--json` emits the same facts in a form that can be pasted into an issue.
+
+`--store` points the same diagnostic at a live index: whether the URI parses and
+the index opens, which backend it is and what it declares it can do, the record
+count and dimensionality, whether document text comes back, SQLite's own
+`PRAGMA integrity_check` wherever there is a file to reach, rebasis' manifest
+integrity, and the encoding profile recorded against the collection.
+
+The check that earns its place is the last one: **whether the collection holds
+two embedding spaces at once**. `migrate --limit`, `--priority access` and every
+pause leave it that way, and no query is correct against both — the count is
+right, the text is right, the ranking is wrong. It costs one indexed aggregate
+per unfinished job in the local manifest: no store is opened for it, no vector
+is read, nothing goes over a network.
+
+**Read-only in every path, including the local one.** Nothing is opened for
+writing. The manifest is opened only when this release would not migrate its
+schema — `ManifestDB` upgrades on connect and takes a backup on the way, which
+is right for `status` and wrong for a command whose whole promise is that it
+changes nothing. A manifest from an older release is reported rather than
+upgraded, and the schema is read out of the SQLite file header so that even the
+decision is a read.
 
 ## `rebasis version`

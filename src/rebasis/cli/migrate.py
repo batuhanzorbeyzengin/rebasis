@@ -1,7 +1,13 @@
-"""``rebasis migrate``, ``status``, ``rollback`` and ``gc``.
+"""``rebasis migrate``, ``pause``, ``resume``, ``status``, ``rollback`` and ``gc``.
 
-These are the commands that write. Every one of them takes the state lock, shows
-what it will do before doing it, and records what it did.
+These are the commands that write. Every one that touches the index takes the
+state lock, shows what it will do before doing it, and records what it did.
+
+``status`` and ``pause`` deliberately take no lock, because a running migration
+holds it for its whole run and both of them exist to be used *while* one is
+running. ``status`` only reads. ``pause`` writes one column — ``pause_requested``
+— that nothing else writes, so there is no second writer to serialise against;
+what state a job is in remains the engine's word alone.
 """
 
 from __future__ import annotations
@@ -23,7 +29,14 @@ if TYPE_CHECKING:
     from rebasis.migrate.engine import MigrationEngine, MigrationResult
     from rebasis.store.base import VectorStore
 
-__all__ = ["gc_command", "migrate_command", "rollback_command", "status_command"]
+__all__ = [
+    "gc_command",
+    "migrate_command",
+    "pause_command",
+    "resume_command",
+    "rollback_command",
+    "status_command",
+]
 
 #: Ids are streamed into the queue in chunks this size. Large enough that the
 #: transaction overhead disappears, small enough that a huge corpus never has
@@ -263,6 +276,10 @@ def _emit_jobs(
         {
             "job_id": job.job_id,
             "state": job.state,
+            # Separate from `state` rather than folded into it: a script that
+            # branches on "running" must keep working, and this is a second fact
+            # about a running job rather than a different state.
+            "pause_requested": job.pause_requested,
             "adapter_type": job.adapter_type,
             "adapter_path": job.adapter_path,
             "store_uri": job.store_uri,
@@ -856,7 +873,10 @@ def status_command(
     for job, stats in jobs:
         table.add_row(
             job.job_id,
-            job.state,
+            # A job that has been asked to stop and has not stopped yet is still
+            # running, and saying only "running" hides the one fact the person
+            # who just asked is waiting on.
+            f"{job.state} [yellow](pausing)[/yellow]" if job.pause_requested else job.state,
             job.adapter_type,
             f"{stats.completed_fraction:.0%}",
             f"{stats.done:,}",
@@ -1033,3 +1053,135 @@ def gc_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI flag
     with state_lock(directory, operation="gc"):
         freed = apply_gc(plan, confirmed=i_understand)
     console.print(f"\n[green]Freed[/green] {freed / 1024**2:.1f} MB")
+
+
+@handle_errors
+def pause_command(
+    job_id: Annotated[str, typer.Argument(help="The running job to stop")],
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Ask a running migration to stop after its current batch.
+
+    The engine reads the request at the top of every batch and finishes the one
+    it is in, so this returns immediately and the job stops a moment later. That
+    is deliberate: killing the process mid-batch is already safe — the queue is
+    the checkpoint and a shadow is always written before the vector it copies is
+    overwritten — but it leaves the store holding a batch nobody has verified,
+    and a clean stop at a boundary does not.
+
+    Takes no lock. The migration it is talking to holds the state lock for its
+    whole run, so a command that waited for it would wait for the thing it is
+    trying to interrupt. What makes that safe is that this writes one column no
+    other process writes: `pause_requested` is a *request*, and only the engine
+    ever says what state a job is in.
+
+    Resume with `rebasis resume <job-id>`, which clears the request.
+    """
+    from rebasis.cli._pipeline import audit_writer_for
+    from rebasis.errors import ConfigError
+    from rebasis.manifest import JobRow, ManifestDB, default_state_dir, manifest_path
+    from rebasis.migrate import JobState, request_pause
+    from rebasis.observability import Events
+
+    directory = state_dir or default_state_dir()
+    path = manifest_path(directory)
+    if not path.exists():
+        raise ConfigError(
+            f"There is no rebasis state at {directory}.",
+            hint="Point --state-dir at the directory the migration was started from.",
+        )
+
+    with ManifestDB(path) as db:
+        row = db.query_one("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+        if row is None:
+            raise ConfigError(
+                f"No migration job {job_id!r}.",
+                hint="`rebasis status` lists every job this state directory knows.",
+                context={"job_id": job_id},
+            )
+        job = JobRow.from_row(row)
+        if not request_pause(db, job_id):
+            # The guard is in the statement, so reaching here means the state
+            # changed under us or was never `running`. Either way the row that
+            # was read is what the user needs to see.
+            raise ConfigError(
+                f"Job {job_id} is {job.state}, not running.",
+                hint=(
+                    "Only a running job can be asked to pause. "
+                    f"`rebasis resume {job_id}` continues one that stopped."
+                ),
+                context={"job_id": job_id, "state": job.state},
+            )
+
+        writer = audit_writer_for(directory)
+        writer.write(
+            Events.MIGRATE_PAUSE_REQUESTED,
+            inputs={"job_id": job_id},
+            outputs={"job_id": job_id, "state": str(JobState.RUNNING)},
+            subject=job_id,
+        )
+
+    console.print(f"[yellow]Pause requested[/yellow] for {job_id}.")
+    console.print("  [dim]it stops at the end of the batch it is in[/dim]")
+    console.print(f"  [dim]resume with `rebasis resume {job_id}`[/dim]")
+
+
+@handle_errors
+def resume_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI flag
+    job_id: Annotated[str, typer.Argument(help="The job to continue")],
+    batch: Annotated[
+        int | None, typer.Option("--batch", help="Records per batch; omit to keep migrate's")
+    ] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="Stop after this many")] = None,
+    power_aware: Annotated[
+        bool | None, typer.Option("--power-aware/--no-power-aware", help="Pause on low battery")
+    ] = None,
+    max_memory: Annotated[
+        str | None, typer.Option("--max-memory", help="Ceiling, e.g. 2GB")
+    ] = None,
+    health_check: Annotated[
+        bool | None,
+        typer.Option("--health-check/--no-health-check", help="Measure the index either side"),
+    ] = None,
+    rebuild_index: Annotated[
+        bool, typer.Option("--rebuild-index", help="Rebuild the search structure at the end")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation")] = False,
+    no_input: Annotated[
+        bool, typer.Option("--no-input", help="Never prompt; fail instead of asking")
+    ] = False,
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Continue a migration that stopped, from where it stopped.
+
+    The same thing as `rebasis migrate --resume <job-id>`, and it forwards to
+    it: the adapter and the store URI come off the job row, the queue is the
+    checkpoint, and any outstanding pause request is cleared as the engine
+    starts. It exists because "pause" and "resume" is the pair a person reaches
+    for, and because `migrate` is the command that starts something new.
+
+    Only the flags that describe *this run* are here. `--priority` and
+    `--access-log` are not: they order the queue, the queue was ordered when the
+    job was created, and re-ordering half a migration would be a different job.
+    Everything left out keeps whatever `migrate` defaults to — the defaults live
+    in one place, and passing them on from here would be a second copy of them.
+    """
+    overrides = {
+        name: value
+        for name, value in (
+            ("batch", batch),
+            ("limit", limit),
+            ("power_aware", power_aware),
+            ("max_memory", max_memory),
+            ("health_check", health_check),
+        )
+        if value is not None
+    }
+    migrate_command(
+        resume=job_id,
+        rebuild_index=rebuild_index,
+        yes=yes,
+        no_input=no_input,
+        state_dir=state_dir,
+        **overrides,
+    )

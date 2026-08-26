@@ -47,7 +47,12 @@ import numpy as np
 from rebasis.core.base import l2_normalize
 from rebasis.errors import MigrationInterrupted, StoreWriteFailed
 from rebasis.migrate.power import ResourceMonitor, power_state
-from rebasis.migrate.queue import JobQueue, set_job_state
+from rebasis.migrate.queue import (
+    JobQueue,
+    clear_pause_request,
+    pause_requested,
+    set_job_state,
+)
 from rebasis.migrate.states import ItemState, JobState
 from rebasis.observability import (
     Events,
@@ -268,6 +273,11 @@ class MigrationEngine:
         notify = on_batch if on_batch is not None else _ignore_progress
         started = time.perf_counter()
         set_job_state(self.db, self.job_id, JobState.RUNNING)
+        # Before the first batch, so a request left over from the run this one
+        # is resuming does not stop it again immediately. Clearing it here
+        # rather than in `rebasis resume` keeps one writer on the column: the
+        # engine is the only thing that knows a run has actually begun.
+        clear_pause_request(self.db, self.job_id)
         log.info(
             Events.MIGRATE_JOB_STARTED,
             job_id=self.job_id,
@@ -285,9 +295,8 @@ class MigrationEngine:
             if limit is not None and processed >= limit:
                 break
 
-            power = power_state(power_aware=self.power_aware)
-            if power.should_pause:
-                pause_reason = power.reason
+            pause_reason = self._reason_to_stop()
+            if pause_reason:
                 break
 
             size = self.monitor.batch_size
@@ -537,8 +546,30 @@ class MigrationEngine:
             )
         return len(expected)
 
+    def _reason_to_stop(self) -> str:
+        """Why this run should stop before starting another batch, or ``""``.
+
+        Both questions are asked *before* the batch rather than after it, so a
+        request made while one was in flight is honoured at the next boundary
+        instead of one batch later.
+
+        The pause request is a primary-key lookup against a local SQLite file,
+        and the batch it guards spends its time in the store and the embedding
+        model — it does not register against that.
+        """
+        if pause_requested(self.db, self.job_id):
+            return "a pause was requested"
+        power = power_state(power_aware=self.power_aware)
+        return power.reason if power.should_pause else ""
+
     def _finish(self, pause_reason: str, duration: float, processed: int) -> JobState:
         stats = self.queue.stats()
+        # However this run ended, no request is outstanding any more: either it
+        # was honoured, or the job stopped for some other reason and a request
+        # aimed at a run that is over would only pause the next one. That keeps
+        # `pause_requested` meaning exactly one thing — *asked, and still
+        # running* — which is what makes it worth showing in `status`.
+        clear_pause_request(self.db, self.job_id)
         if pause_reason:
             state = JobState.PAUSED
             log.warning(

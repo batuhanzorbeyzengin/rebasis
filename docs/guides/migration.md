@@ -54,8 +54,8 @@ store *before* the new ones are written. A crash before the write costs nothing;
 a crash after the write, without the shadow, would cost the originals.
 
 **The queue is the checkpoint.** Interrupt it — Ctrl-C, a closed laptop, a
-kill -9 — and `--resume <job-id>` continues from the last completed batch. There
-is no separate checkpoint file to get out of sync with reality.
+kill -9 — and `rebasis resume <job-id>` continues from the last completed batch.
+There is no separate checkpoint file to get out of sync with reality.
 
 **It verifies what it wrote.** After each batch, a sample of the written records
 is read back from the store and compared. A store that silently fails to write is
@@ -109,7 +109,7 @@ Useful flags:
 | `--max-memory 2GB` | A ceiling. The batch size is computed from it — you should not have to. |
 | `--priority access --access-log log.jsonl` | Migrate what you actually read first, so quality improves where you will notice. |
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
-| `--resume <job-id>` | Continue an interrupted job. |
+| `--resume <job-id>` | Continue an interrupted job. `rebasis resume <job-id>` is the same thing. |
 
 ### Whether to run it at all
 
@@ -243,6 +243,39 @@ rebasis status
 
 Takes no lock, so it works while a migration is running — which is exactly when
 you want it.
+
+## Stopping it, and starting it again
+
+```bash
+rebasis pause <job-id>     # stops after the current batch
+rebasis resume <job-id>    # picks up where it stopped
+```
+
+Killing the process is safe and always was: the queue is the checkpoint, and a
+shadow copy is written before the vector it copies is overwritten. What it is
+not is *clean*. A kill lands in the middle of a batch, and that batch's records
+are left in the store without having been read back and compared — verified
+writes are a per-batch guarantee, and half a batch does not get one.
+
+`pause` stops at a batch boundary instead. It returns immediately and the job
+stops a moment later, at the end of the batch it is in.
+
+Like `status`, it takes no lock — the migration holds the state lock for its
+whole run, so waiting for the lock would mean waiting for the thing you are
+trying to stop. What makes that safe is that `pause` writes one column nothing
+else writes. It records a **request**; only the engine ever says what state a job
+is in. While the request is outstanding, `status` shows the job as
+`running (pausing)`, and `--json` carries it as a separate `pause_requested`
+field.
+
+A request never outlives the run it was made for: it is cleared when a run ends
+and again when one starts. A process killed between `rebasis pause` and the
+engine reading it cannot leave behind a flag that silently pauses tomorrow's run.
+
+A paused job is a job stopped short, so everything under
+[Stopping short leaves two spaces in one index](#stopping-short-leaves-two-spaces-in-one-index)
+applies to it. Pausing is not a way to stop safely and walk away; it is a way to
+stop safely and come back.
 
 ## Rolling back
 
@@ -387,7 +420,7 @@ Removing a *shadow copy* makes that job permanently irreversible, so it needs
 
 The batch is marked `FAILED`, the job stops, and the failing records keep their
 error code. Everything already written stays written; everything not yet written
-stays queued. Fix the cause, then `--resume`.
+stays queued. Fix the cause, then `rebasis resume <job-id>`.
 
 The one thing that never happens is a partially-written record: the shadow is
 taken first, the write is one call, and the read-back verifies it.

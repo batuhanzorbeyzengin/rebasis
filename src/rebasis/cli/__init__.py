@@ -19,6 +19,8 @@ from rebasis.cli.fit import fit_command
 from rebasis.cli.migrate import (
     gc_command,
     migrate_command,
+    pause_command,
+    resume_command,
     rollback_command,
     status_command,
 )
@@ -202,6 +204,8 @@ app.command("probe")(probe_command)
 app.command("fit")(fit_command)
 app.command("eval")(eval_command)
 app.command("migrate")(migrate_command)
+app.command("pause")(pause_command)
+app.command("resume")(resume_command)
 app.command("status")(status_command)
 app.command("rollback")(rollback_command)
 app.command("gc")(gc_command)

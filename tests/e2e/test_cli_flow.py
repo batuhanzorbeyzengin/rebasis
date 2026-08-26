@@ -542,6 +542,79 @@ class TestFitAndMigrate:
         assert resumed.exit_code == EXIT_OK, resumed.output
         assert "completed" in resumed.output
 
+    def test_the_resume_command_finishes_what_migrate_started(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """`rebasis resume <job-id>` is the verb that pairs with `rebasis pause`.
+
+        It forwards to `migrate --resume`, so what this proves is the
+        forwarding: the job id reaches the right parameter, the adapter and
+        store come off the job row exactly as they do for the flag, and the
+        queue picks up where it stopped.
+        """
+        out = corpus["tmp"] / "adapter.rbs"
+        forward_adapter(corpus, out)
+        started = runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--limit",
+                "2",
+                "--yes",
+            ],
+        )
+        assert started.exit_code == EXIT_OK, started.output
+
+        resumed = runner.invoke(
+            app,
+            ["resume", _latest_job(corpus), "--state-dir", str(corpus["state"]), "--yes"],
+        )
+
+        assert resumed.exit_code == EXIT_OK, resumed.output
+        assert "completed" in resumed.output
+
+    def test_resume_forwards_the_flags_that_describe_the_run(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """`--limit` is the one that is visible in the outcome: a resume that
+        stops short again leaves the index mixed, which `status` reports."""
+        out = corpus["tmp"] / "adapter.rbs"
+        forward_adapter(corpus, out)
+        runner.invoke(
+            app,
+            [
+                "migrate",
+                "--adapter",
+                str(out),
+                "--store",
+                corpus["uri"],
+                "--state-dir",
+                str(corpus["state"]),
+                "--limit",
+                "2",
+                "--yes",
+            ],
+        )
+
+        resumed = runner.invoke(
+            app,
+            [
+                "resume",
+                _latest_job(corpus),
+                "--state-dir",
+                str(corpus["state"]),
+                "--limit",
+                "2",
+                "--yes",
+            ],
+        )
+
+        assert resumed.exit_code == EXIT_OK, resumed.output
+        status = runner.invoke(app, ["status", "--state-dir", str(corpus["state"])])
+        assert "two embedding spaces" in status.output
+
     def test_resume_says_so_when_the_job_never_recorded_an_adapter(  # type: ignore[no-untyped-def]
         self, corpus
     ) -> None:

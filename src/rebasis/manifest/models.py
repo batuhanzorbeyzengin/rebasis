@@ -82,6 +82,10 @@ class JobRow:
     keep_original: bool
     config: dict[str, Any]
     error_code: str
+    #: Someone has asked this job to stop and it has not stopped yet. Added in
+    #: schema 3; a job written before that reads as ``False``, which is right —
+    #: nothing could have asked it.
+    pause_requested: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> JobRow:
@@ -102,6 +106,7 @@ class JobRow:
             keep_original=bool(_number(row, "keep_original", 1)),
             config=_payload(row, "config_json"),
             error_code=_text(row, "error_code"),
+            pause_requested=bool(_number(row, "pause_requested", 0)),
         )
 
     @property
