@@ -38,6 +38,16 @@ if TYPE_CHECKING:
 
 __all__ = ["QdrantStore"]
 
+#: What to check when a store will not open at all. Shared wording because the
+#: distinction it draws is the same on every backend: a database that cannot be
+#: opened (RB-E3000) is a different problem from one that opened and does not
+#: hold the collection you named (RB-E3003), and a user who is told the wrong one
+#: looks in the wrong place.
+HINT = (
+    "Check the path exists and is readable. A store that cannot be opened is a "
+    "different problem from a collection that is not in it, which reports RB-E3003."
+)
+
 DEFAULT_BATCH = 256
 
 #: Payload keys tried in order when the URI does not name one.
@@ -104,7 +114,18 @@ class QdrantStore:
                 context={"store_backend": "qdrant"},
             )
 
-        client = _client(QdrantClient, uri, **kwargs)
+        # Local mode raises `FileNotFoundError` for a path that is not there and
+        # the network client raises its own transport errors. Neither is a rebasis
+        # error, and both used to reach the caller unconverted.
+        try:
+            client = _client(QdrantClient, uri, **kwargs)
+        except Exception as exc:
+            raise StoreError(
+                f"Qdrant could not be reached at {uri.path or uri.host or '(unset)'!r}.",
+                hint=HINT,
+                context={"store_backend": "qdrant"},
+                cause=exc,
+            ) from exc
         names = _collection_names(client)
         if uri.collection not in names:
             raise CollectionNotFound(
