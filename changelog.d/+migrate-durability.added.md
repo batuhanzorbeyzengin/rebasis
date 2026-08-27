@@ -1,1 +1,0 @@
-`migrate` reopens the store on a fresh connection when the queue empties and re-checks a 64-record sample drawn from across the whole run. The per-batch read-back goes through the handle that wrote, which is exactly the handle a caching client answers from memory; this catches a store that accepted every write and did not keep them (`RB-E6005`).

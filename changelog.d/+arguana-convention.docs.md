@@ -1,1 +1,0 @@
-The ArguAna figures in `docs/bridge-band.md` are corrected. ArguAna is evaluated with self-removal — a query is itself an argument that also appears in the corpus — and the evaluation harness omitted it. With the standard convention the harness matches Anserini's reproduction to within 0.003. Every conclusion in the document is unchanged; the break-even still predicts 29 of 29.

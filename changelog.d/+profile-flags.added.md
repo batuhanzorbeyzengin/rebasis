@@ -1,1 +1,0 @@
-`--old-dim`, `--new-dim`, `--query-prefix` and `--document-prefix` on `probe`, `fit` and `eval`, so a model rebasis has never seen can still be measured. The error that told users to pass these flags predated the flags themselves.

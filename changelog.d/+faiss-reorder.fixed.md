@@ -1,1 +1,0 @@
-FAISS: a write reorders the index — `remove_ids` closes the gap and `add_with_ids` appends — so the metadata sidecar, which is a plain list in row order, was left naming the wrong vectors after the first `migrate`. The sidecar is now rewritten in the new order with the index. An index holding the same label twice is refused on open rather than resolved arbitrarily.

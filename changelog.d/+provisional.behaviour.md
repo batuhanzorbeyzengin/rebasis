@@ -1,1 +1,0 @@
-A run that cannot measure whether the new model is better is now marked provisional: it reports how well an adapter bridges and declines to recommend acting on it. Without a query log the previous rule said `bridge_and_migrate` in six of six cases where bridging actually lost ground.

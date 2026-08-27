@@ -1,1 +1,0 @@
-CI runs the suite on macOS as well as Linux, on the floor Python. The storage layer is where the two differ — directory fsync, `os.replace`, and a system sqlite3 that cannot load extensions — and the users this tool is aimed at are mostly on macOS. The `3.14` trove classifier is gone: nothing tested it.

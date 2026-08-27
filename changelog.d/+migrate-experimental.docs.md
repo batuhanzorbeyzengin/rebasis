@@ -1,1 +1,0 @@
-`migrate` is marked experimental in `--help`, in the pre-flight preview and in the docs, with a per-backend table of what is actually tested. It works and every guarantee is covered by a test against a real store, but nobody has yet run it against an index they could not rebuild.

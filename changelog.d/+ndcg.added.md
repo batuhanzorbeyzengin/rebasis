@@ -1,1 +1,0 @@
-nDCG@10 is computed in the core path and reported alongside recall. It moved out of the optional `[eval]` extra because it changes decisions: on BEIR/scifact an adapter improved recall@10 while nDCG@10 fell, and a recall-only rule read that as an improvement.

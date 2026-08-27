@@ -1,3 +1,0 @@
-The `lowest direct dependencies` CI job passes again. click 8.5.0 turned `click.utils.get_binary_stream` into a deprecated alias, and every typer up to 0.25 imports it by that name — so pairing the declared typer floor with a current click raised a `DeprecationWarning` during collection, which this project's `error::DeprecationWarning` policy turns into ten collection errors.
-
-Measured across releases: 0.16 through 0.25 warn, 0.26.0 is the first that does not. The floor is left where it is and the warning is filtered, for the reason the chromadb line beside it gives — raising it would withdraw support for ten typer releases over a notice in someone else's code, and typer 0.16 runs correctly. No other job sees it: the lock resolves typer 0.27.1.

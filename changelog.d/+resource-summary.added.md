@@ -1,1 +1,0 @@
-Every probe run records what it cost — wall and CPU time, peak RSS, BLAS threads, device, and energy where the hardware reports it — plus an estimate of a full reindex extrapolated from the run's own measured embedding rate. Energy is measured or absent, never estimated.

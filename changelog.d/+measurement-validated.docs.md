@@ -1,1 +1,0 @@
-The retrieval-quality harness is validated against published reproductions: it matches BEIR nDCG@10 for all-MiniLM-L6-v2 and bge-small-en-v1.5 on SciFact, FiQA and NFCorpus to three decimal places, and Anserini's own bge-base reproduction on CQADupStack-programmers to within 0.0004.

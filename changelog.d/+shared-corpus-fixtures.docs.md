@@ -1,1 +1,0 @@
-The clustered-corpus and drift builders duplicated across four test files are now `make_corpus` and `make_drift` fixtures in the root conftest. The role of `tests/fixtures/` and `tests/helpers/` is filled by conftest in this suite: pytest resolves fixtures by name with no import path to get wrong, where an importable helper module collides once the whole suite is collected.

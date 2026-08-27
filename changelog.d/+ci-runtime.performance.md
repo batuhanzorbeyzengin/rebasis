@@ -1,1 +1,0 @@
-The CI test job runs the suite once instead of twice. Collection imports torch and every store client, and that cost is paid per pytest process, so splitting the run into "unit, property and contract" then "integration and e2e" paid it twice for an isolation the markers already provided.

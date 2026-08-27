@@ -1,1 +1,0 @@
-`sqlite_vec` was registered as a second store backend rather than as a spelling of `sqlite-vec`, so `rebasis doctor` reported seven backends where there are six and named one that appears nowhere in the docs. The underscore form still resolves; it is an alias now.

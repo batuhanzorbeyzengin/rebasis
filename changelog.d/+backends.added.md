@@ -1,1 +1,0 @@
-Embedding backends for FastEmbed, Ollama, llama.cpp and any OpenAI-compatible endpoint; a FAISS store backend. FastEmbed needs no torch; the OpenAI-compatible one is the only backend that can send document text off the machine, and says so.

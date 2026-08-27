@@ -1,1 +1,0 @@
-GitHub Actions are pinned to versions that run on Node 24: `checkout@v7`, `upload-artifact@v7`, `gitleaks-action@v3`, `upload-pages-artifact@v5`, `deploy-pages@v5`, and `setup-uv@v10.0.1`. The last is pinned to a full version on purpose — setup-uv stopped publishing floating major tags at v8, so `@v10` does not resolve.
