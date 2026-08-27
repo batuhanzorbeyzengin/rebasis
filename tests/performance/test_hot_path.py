@@ -1,8 +1,16 @@
 """Hot-path micro-benchmarks.
 
-Excluded from the default run (marker ``perf``). The budget is 15 µs for a
-single query and 1.5 ms for a 256-batch, and M0 measured what those are
-actually worth:
+**Two markers, and the split is what each test asserts on.** The wall-clock
+tests are ``perf``: they run on the measurement host, never on the merge path,
+because a shared runner cannot measure timing — CI failed twice on
+``test_batching_amortises_the_per_call_cost`` by 1% and 2.6%, which is noise
+wearing a red X. The last two tests assert bytes rather than seconds, and
+``tracemalloc`` measures the same on a shared runner as on a quiet one, so they
+are ``memory`` and CI gates on them. Both are excluded from the default local
+run; ``just gate`` runs the second half.
+
+The budget is 15 µs for a single query and 1.5 ms for a 256-batch, and M0
+measured what those are actually worth:
 
 | | Apple Silicon, d=384 | cloud vCPU, d=384 | cloud vCPU, d=768 |
 |---|---|---|---|
@@ -205,7 +213,7 @@ def test_the_centred_adapter_folds_its_offset(adapters: dict[str, object]) -> No
     )
 
 
-@pytest.mark.perf
+@pytest.mark.memory
 @pytest.mark.parametrize("name", ["procrustes", "procrustes_centered", "linear", "low_rank_affine"])
 def test_hot_path_allocates_a_bounded_amount(adapters: dict[str, object], name: str) -> None:
     """Catch a log call or a dict copy sneaking onto the hot path.
@@ -235,7 +243,7 @@ def test_hot_path_allocates_a_bounded_amount(adapters: dict[str, object], name: 
     assert per_call < 64 * 1024, f"{name} allocates {per_call:.0f} bytes per call"
 
 
-@pytest.mark.perf
+@pytest.mark.memory
 def test_adapter_memory_matches_the_design_table(adapters: dict[str, object]) -> None:
     """The recorded memory figures, at the dimension they quote.
 

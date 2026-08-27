@@ -1,22 +1,49 @@
 # rebasis — release
 #
 # The version is not chosen by a human. Commit messages choose it:
-# python-semantic-release parses them, works out the next version, writes the
-# changelog, tags, and pushes. The git tag is the single source of the version, and
-# hatch-vcs derives the package version from it — so nothing is edited by hand
-# and nothing can disagree.
+# python-semantic-release parses them and works out the next version, the git tag
+# carries it, and hatch-vcs derives the package version from the tag — so nothing
+# is edited by hand and nothing can disagree.
 #
-# Publishing uses PyPI Trusted Publishing: no API token exists to leak.
+# Publishing uses Trusted Publishing: no API token exists to leak.
+#
+# ── Three modes, and what each one costs if it goes wrong ────────────────────
+#
+#   dry-run   Prints the version the commits imply and the changelog that would
+#             be written. Touches nothing, publishes nothing, and is safe to run
+#             at any time. `semantic-release version --print` exits before it
+#             changes anything, which is what makes this honest rather than
+#             merely quick.
+#
+#   rehearse  Everything the real thing does, except the two irreversible parts:
+#             nothing is pushed and nothing reaches PyPI. The changelog is
+#             assembled, committed on the runner's throwaway checkout, tagged
+#             locally, built at that tag, and uploaded to TestPyPI. What it
+#             proves is what the dry run cannot: that towncrier assembles, that
+#             hatch-vcs reads the tag, and that Trusted Publishing works end to
+#             end for this repository.
+#
+#   release   The same steps, pushed, against PyPI.
+#
+# The reason `rehearse` commits rather than building a dirty tree: hatch-vcs
+# appends a local version segment (`+d20260827`) to a build made from uncommitted
+# changes, and PyPI rejects local version identifiers outright. A rehearsal from
+# a dirty tree would therefore fail on the upload for a reason that has nothing
+# to do with the release, which is the opposite of what a rehearsal is for.
 
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Work out the next version and stop"
-        type: boolean
-        default: false
+      mode:
+        description: "dry-run prints; rehearse publishes to TestPyPI without pushing; release publishes to PyPI"
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - rehearse
+          - release
 
 concurrency:
   group: release
@@ -25,12 +52,18 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The lock is the environment every gate below is measured in. A release that
+  # silently resolved something newer would be testing a tree nobody reviewed.
+  UV_FROZEN: "1"
+
 jobs:
   # The release checklist, as a gate rather than a document. A
   # release that skips its own checklist is how a broken sdist reaches PyPI.
   verify:
     name: pre-release checks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,24 +81,54 @@ jobs:
           uv run ruff format --check src tests spikes examples tools
           uv run mypy src
           uv run lint-imports
-      - name: the full suite, except what needs the GPU host
-        run: uv run pytest -m "not gpu and not slow and not network" -q
+      - name: the full suite, except what needs the host
+        # `not perf`, matching `ci.yml`. This job used to omit it, which meant a
+        # release ran exactly the wall-clock assertions CI had removed for being
+        # unmeasurable on a shared runner — including
+        # `test_batching_amortises_the_per_call_cost`, which had already gone red
+        # twice on noise. A release blocked by a 2.6% timing wobble is a release
+        # blocked by nothing. Those numbers are gated on the host instead, before
+        # a release, per `docs/development/testing.md`.
+        #
+        # `memory` still runs here, as it does on every pull request: peak
+        # allocation is deterministic and a release is exactly when the
+        # `O(batch x d)` invariant is worth re-checking.
+        run: uv run pytest -m "not gpu and not slow and not network and not perf" -q
       - name: generated catalogues are current
         run: |
           uv run python -m rebasis.report.catalog --out docs/reference
           git diff --exit-code docs/reference
+      - name: every arXiv citation names its paper
+        run: uv run python tools/check_citations.py
       - name: the docs build
         run: uv run --group docs mkdocs build
+      - name: there is something to release
+        # towncrier assembles the changelog from `changelog.d/`. An empty
+        # directory means either nothing user-visible changed — in which case
+        # there is nothing to release — or somebody forgot the fragment, which is
+        # the case worth catching, because the changelog is the only artefact
+        # written for the person upgrading.
+        run: |
+          count=$(find changelog.d -name '+*.md' -o -name '[0-9]*.md' | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::changelog.d/ holds no news fragments — nothing to release."
+            exit 1
+          fi
+          echo "$count news fragments will be assembled."
 
   build:
     name: build and check the artifacts
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: build
       - name: build
         run: uv build
       - name: the sdist installs and imports
@@ -77,15 +140,112 @@ jobs:
           VIRTUAL_ENV=/tmp/sdist-check uv pip install dist/*.tar.gz
           VIRTUAL_ENV=/tmp/sdist-check uv run --no-project python -c \
             "import rebasis; print(rebasis.__version__)"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
 
-  release:
-    name: tag and publish
+  # ── dry-run ────────────────────────────────────────────────────────────────
+  plan:
+    name: the version and the changelog this would write
+    if: ${{ inputs.mode == 'dry-run' }}
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: plan
+      - name: work out the next version from the commits
+        run: |
+          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
+          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          echo "### Next version: \`$NEXT\` (tag \`$TAG\`)" >> "$GITHUB_STEP_SUMMARY"
+      - name: the changelog it would write
+        run: |
+          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
+          {
+            echo '<details><summary>Changelog draft</summary>'
+            echo
+            uv run towncrier build --draft --version "$NEXT"
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - run: echo "Dry run — nothing was assembled, tagged or published."
+
+  # ── rehearse: everything except the irreversible parts ─────────────────────
+  rehearse:
+    name: rehearse on TestPyPI
+    if: ${{ inputs.mode == 'rehearse' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/rebasis
+    permissions:
+      # No `contents: write`. Nothing this job does is pushed, and withholding
+      # the permission is what makes that a property rather than a promise.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: rehearse
+      - name: assemble the changelog and tag, locally
+        run: |
+          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
+          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          uv run towncrier build --yes --version "$NEXT"
+          git config user.name "rebasis release"
+          git config user.email "noreply@github.com"
+          git add CHANGELOG.md changelog.d
+          git commit -m "chore(release): $NEXT"
+          git tag -a "$TAG" -m "rebasis $NEXT"
+          echo "### Rehearsing \`$NEXT\` (tag \`$TAG\`, not pushed)" >> "$GITHUB_STEP_SUMMARY"
+      - name: build at the tag
+        run: |
+          rm -rf dist
+          uv build
+          ls -1 dist
+      - name: the version in the artefact is the version in the tag
+        # hatch-vcs appends a local segment to a build from a dirty tree, and
+        # PyPI rejects local version identifiers. Catching that here, by name,
+        # beats reading it out of a rejected upload.
+        run: |
+          ls dist/*.whl >/dev/null
+          for f in dist/*; do
+            case "$f" in
+              *+*) echo "::error::$f carries a local version segment — the tree was dirty at build time."; exit 1 ;;
+            esac
+          done
+      - name: publish to TestPyPI
+        # `skip-existing`: a second rehearsal of the same version is a normal
+        # thing to want, and TestPyPI refuses a re-upload. Skipping is the right
+        # answer there and would be the wrong one on PyPI, which is why only this
+        # job sets it.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+      - name: what to check before releasing for real
+        run: |
+          {
+            echo "Nothing was pushed and nothing reached PyPI."
+            echo "Check <https://test.pypi.org/project/rebasis/>: the version, the"
+            echo "rendered README, the classifiers, and that the attestation is present."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── release ────────────────────────────────────────────────────────────────
+  release:
+    name: tag and publish
+    if: ${{ inputs.mode == 'release' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment:
       name: pypi
       url: https://pypi.org/p/rebasis
@@ -98,28 +258,73 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: release
       - name: work out the next version from the commits
         id: version
+        # `--print` and `--print-tag` both exit before changing anything, so the
+        # version is decided before a single file moves. `--print-tag` honours
+        # `tag_format` from pyproject, which is why the tag is read from it
+        # rather than assembled here — one source for the format, not two.
         run: |
-          # --no-changelog: towncrier owns CHANGELOG.md. Letting the release
-          # tool generate one too would have two writers on one file, and the
-          # one that loses is the one written for a reader.
-          uv run --with python-semantic-release semantic-release version \
-            --no-changelog \
-            ${{ inputs.dry_run && '--print' || '--no-push --no-vcs-release' }}
-      - name: stop here on a dry run
-        if: ${{ inputs.dry_run }}
-        run: echo "Dry run — nothing was tagged or published."
-      - name: push the tag
-        if: ${{ !inputs.dry_run }}
+          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
+          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          if [ -z "$NEXT" ]; then
+            echo "::error::semantic-release printed no version."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists. PyPI will not accept a re-upload of a released version."
+            exit 1
+          fi
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "### Releasing \`$NEXT\` as \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: assemble the changelog
+        # towncrier owns CHANGELOG.md, and this is the step that was missing:
+        # `--no-changelog` was passed to the release tool with a comment saying
+        # towncrier would do it, and then nothing called towncrier. A release cut
+        # that way ships an unchanged changelog and leaves every news fragment
+        # sitting in `changelog.d/`.
+        #
+        # This commit is the release commit. The tag is placed on it below, so
+        # the changelog is inside the release rather than one commit behind it.
+        run: |
+          uv run towncrier build --yes --version "${{ steps.version.outputs.next }}"
+          git config user.name "rebasis release"
+          git config user.email "noreply@github.com"
+          git add CHANGELOG.md changelog.d
+          git commit -m "chore(release): ${{ steps.version.outputs.next }}"
+      - name: tag
+        # `chore:` by design: the commit parser gives it no version bump, so this
+        # commit cannot influence the version of the release after this one.
+        run: git tag -a "${{ steps.version.outputs.tag }}" -m "rebasis ${{ steps.version.outputs.next }}"
+      - name: push the commit and the tag
         run: git push --follow-tags
-      - name: rebuild at the tagged version
+      - name: build at the tagged version
         # Rebuilt rather than reusing the artifact from `build`: hatch-vcs reads
         # the version from the tag, and the earlier build predates it.
-        if: ${{ !inputs.dry_run }}
-        run: uv build
+        run: |
+          rm -rf dist
+          uv build
+      - name: the version in the artefact is the version in the tag
+        run: |
+          for f in dist/*; do
+            case "$f" in
+              *+*) echo "::error::$f carries a local version segment — the tree was dirty at build time."; exit 1 ;;
+            esac
+          done
+          ls dist/*"${{ steps.version.outputs.next }}"* >/dev/null
       - name: publish
-        if: ${{ !inputs.dry_run }}
         # Trusted Publishing — the token is minted for this run and expires
-        # with it. There is no long-lived secret to leak.
+        # with it. There is no long-lived secret to leak. The action has produced
+        # a PEP 740 attestation by default since v1.11.0, so the published files
+        # carry one without further configuration.
         uses: pypa/gh-action-pypi-publish@release/v1
+      - name: the release notes
+        run: |
+          {
+            echo "Published <https://pypi.org/project/rebasis/${{ steps.version.outputs.next }}/>."
+            echo "Check that the attestation shows on the file listing."
+          } >> "$GITHUB_STEP_SUMMARY"

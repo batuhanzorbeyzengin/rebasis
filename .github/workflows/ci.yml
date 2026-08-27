@@ -113,6 +113,15 @@ jobs:
         # on a fixed runner — so do the ratios. The whole layer runs on the
         # project's own host, which is the machine its numbers describe.
         #
+        # `memory` is deliberately NOT excluded, and that is why the marker
+        # exists. Excluding the timing assertions used to exclude the
+        # peak-allocation ones along with them, because both wore `perf` — so
+        # the `O(batch x d)` invariant, the one guard against a
+        # `list(iter_records())` that fails only on corpora nobody has in
+        # development, gated nothing, while `benchmarks/README.md` went on
+        # saying it gated every pull request. `tracemalloc` does not care how
+        # loaded the runner is. This job is where that invariant is enforced.
+        #
         # `-rs` and the grep for skips carry over from the job this replaced: a
         # backend test that opens with `pytest.importorskip` reports the same
         # green summary whether it ran or was never installed, and that is how

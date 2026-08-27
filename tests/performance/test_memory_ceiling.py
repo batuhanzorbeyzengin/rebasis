@@ -13,6 +13,13 @@ on a 50,000-chunk vault and a 5,000,000-chunk one. A single `list(iter_records()
 breaks that, and it breaks it only on corpora large enough that nobody notices
 in development. So the test measures peak memory at three sizes and asserts it
 does not track N — while time is allowed to grow, but not super-linearly.
+
+**"An absolute limit that fails the build" was not true for a while, and this
+file is where that was discovered.** The whole module carried `perf`, CI runs
+`-m "not perf"`, and so the one mechanism that catches the `O(N × d)` class
+of bug ran on no pull request at all — while `benchmarks/README.md` went on
+saying it gated every one. The marker now follows what each test *asserts on*:
+allocation is `memory` and gates a merge, wall clock is `perf` and does not.
 """
 
 from __future__ import annotations
@@ -30,7 +37,11 @@ from rebasis.probe.session import draw_corpus_sample
 from rebasis.store import MemoryStore
 from rebasis.types import EncodingProfile
 
-pytestmark = pytest.mark.perf
+# No module-level marker. Five of the six tests below assert peak *allocation*,
+# which `tracemalloc` measures identically on a shared runner and on a quiet
+# host — those are `memory`, and CI gates on them. One asserts the shape of the
+# *time* curve, and a marker that put it in the same bucket would drag it onto
+# the merge path, which is the mistake this split exists to undo.
 
 DIM = 128
 
@@ -85,6 +96,7 @@ def peak_bytes_of_sampling(store: MemoryStore, size: int) -> tuple[int, float]:
 
 
 class TestScalingInvariant:
+    @pytest.mark.memory
     def test_peak_memory_does_not_track_corpus_size(self, rng: np.random.Generator) -> None:
         """The architectural invariant, measured rather than asserted.
 
@@ -102,6 +114,7 @@ class TestScalingInvariant:
             f"the read must be O(batch x d), not O(N x d)"
         )
 
+    @pytest.mark.perf
     def test_time_grows_but_not_super_linearly(self, rng: np.random.Generator) -> None:
         """A 20x corpus may cost more than 20x, but not 400x."""
         sample_size = 1_000
@@ -114,6 +127,7 @@ class TestScalingInvariant:
         )
 
 
+@pytest.mark.memory
 class TestCeilings:
     def test_the_sample_stays_within_its_budget(self, rng: np.random.Generator) -> None:
         """A 10k x 768 sample is 30 MB of vectors.
@@ -193,6 +207,7 @@ class TestCeilings:
         assert peak < 20 * 1024**2, f"loading cost {peak / 1024**2:.1f} MB"
 
 
+@pytest.mark.memory
 class TestEmbeddingBudget:
     def test_encoding_holds_only_the_result(self, rng: np.random.Generator) -> None:
         """The chunked encoder must not accumulate intermediates.

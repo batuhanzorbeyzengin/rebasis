@@ -56,7 +56,10 @@ It also tells you whether to bother, which is the more useful half:
 > instead of selling you the adapter.
 
 The second number is the one that matters. A tool that always recommends itself
-is not a measurement.
+is not a measurement. Read it for what it is: how often the tool declined to sell
+you the adapter, which is not the same as how often it was *right*. The accuracy
+version of that count turned out to be an algebraic identity and
+[has been withdrawn](#the-decision-rule).
 
 ---
 
@@ -216,8 +219,10 @@ bridge_advantage = ARR × upgrade_gain
 ```
 
 — how much of a full reindex the adapter recovers, times how much better the new
-model is *on your corpus*. Above 1.0 bridging beats leaving things alone. It has
-**That count was an identity, and it has been withdrawn.** Read off one run's own
+model is *on your corpus*. Above 1.0 bridging beats leaving things alone.
+
+**The count that used to follow that sentence was an identity, and it has been
+withdrawn.** Read off one run's own
 scores, `ARR × upgrade_gain` is `(bridged/reindex) × (reindex/status quo)` —
 which is `bridged/status quo`, the same inequality as the outcome it was being
 scored against. It agreed 57 times out of 57 on the runs still on disk because it

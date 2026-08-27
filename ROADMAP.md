@@ -317,8 +317,18 @@ shape:
   `storage/atomic.py` at 92.5% against 100. Overall coverage is 81.8% against a
   floor of 75, enforced in CI, where `tools/check_coverage_floors.py` also
   checks the per-module targets against the finished report.
-- **More than one operating system in CI.** Linux and macOS run today; the
-  storage layer has documented Windows-specific behaviour that nothing exercises.
+- **More than one operating system in CI.** Linux is the only one today. The
+  macOS leg was added and then removed: `faiss-cpu` and `torch` each link their
+  own OpenMP runtime there, and a process holding both aborts before either
+  library does any work ([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
+  [pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). That is
+  the wrong thing to have lost, because the storage layer is exactly where the
+  platforms differ — directory fsync, `os.replace`, a system sqlite3 that cannot
+  load extensions — and it is also where a bug costs data. A narrower leg that
+  runs `storage/` and `manifest/` without either library would clear the
+  conflict; nothing has been written yet. macOS is the maintainer's own platform
+  and the suite runs there, which is a person rather than a gate. Windows has
+  documented behaviour in the storage layer that nothing exercises at all.
 - **A decision rule that has not moved for a release.** It changed twice on
   evidence and then held across 33 held-out runs. One more release without a
   change and the thresholds can be called settled.
