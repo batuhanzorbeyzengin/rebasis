@@ -73,6 +73,26 @@ jobs:
             echo "::error::docs/reference is stale. Run 'just docs-gen' and commit."
             exit 1
           }
+      - name: the release tooling can still work out a version
+        # The release path used to resolve `python-semantic-release` fresh on
+        # every run, outside `uv.lock`. GitPython 3.1.60 removed an attribute it
+        # reads, and the release workflow broke on a repository where nothing had
+        # changed — with no warning until somebody tried to cut a release.
+        #
+        # It is in the lock now, so that cannot happen from an upload alone. This
+        # step is the other half: it makes the *upgrade* visible on the pull
+        # request that proposes it, rather than at the moment a release is
+        # wanted. Ten seconds, and it exercises exactly what the release job's
+        # first step does.
+        run: |
+          version=$(uv run --group release semantic-release version --print)
+          tag=$(uv run --group release semantic-release version --print-tag)
+          if [ -z "$version" ] || [ -z "$tag" ]; then
+            echo "::error::the release tooling printed no version"
+            exit 1
+          fi
+          echo "next release would be $version ($tag)"
+
       - name: every arXiv citation names its paper
         # The offline half: that `docs/citations.toml` and the committed
         # documentation name the same set of papers. It touches no network, so it

@@ -185,6 +185,24 @@ docs = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.26",
 ]
+# The release tooling, in the lock rather than resolved fresh on every run.
+#
+# It was `uv run --with python-semantic-release`, which bypasses `uv.lock`
+# entirely and resolves whatever is newest at that moment. GitPython 3.1.60
+# removed `Actor.name_email_regex`, python-semantic-release 10.6.1 reads it to
+# parse `commit_author`, and the release workflow broke on a repository where
+# nothing had changed — found by the `dry-run` mode, which is what it is for.
+#
+# A release path that can break from somebody else's upload is not a release
+# path. In the lock it is pinned, Dependabot proposes the upgrade as a pull
+# request, and `ci.yml` checks on every pull request that the tooling can still
+# work out a version.
+release = [
+    "python-semantic-release>=10.6",
+    # Not a taste. 3.1.60 is the release that removed the attribute above.
+    "gitpython<3.1.60",
+]
+
 # M0 spike dependencies — never shipped, development environment only
 spike = [
     "sentence-transformers>=3.0",

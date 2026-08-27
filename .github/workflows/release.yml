@@ -158,12 +158,12 @@ jobs:
           cache-suffix: plan
       - name: work out the next version from the commits
         run: |
-          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
-          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          NEXT=$(uv run --group release semantic-release version --print)
+          TAG=$(uv run --group release semantic-release version --print-tag)
           echo "### Next version: \`$NEXT\` (tag \`$TAG\`)" >> "$GITHUB_STEP_SUMMARY"
       - name: the changelog it would write
         run: |
-          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
+          NEXT=$(uv run --group release semantic-release version --print)
           {
             echo '<details><summary>Changelog draft</summary>'
             echo
@@ -198,8 +198,8 @@ jobs:
       - name: assemble the changelog and tag, locally
         id: version
         run: |
-          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
-          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          NEXT=$(uv run --group release semantic-release version --print)
+          TAG=$(uv run --group release semantic-release version --print-tag)
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           uv run towncrier build --yes --version "$NEXT"
           git config user.name "rebasis release"
@@ -284,8 +284,8 @@ jobs:
         # `tag_format` from pyproject, which is why the tag is read from it
         # rather than assembled here — one source for the format, not two.
         run: |
-          NEXT=$(uv run --with python-semantic-release semantic-release version --print)
-          TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          NEXT=$(uv run --group release semantic-release version --print)
+          TAG=$(uv run --group release semantic-release version --print-tag)
           if [ -z "$NEXT" ]; then
             echo "::error::semantic-release printed no version."
             exit 1
