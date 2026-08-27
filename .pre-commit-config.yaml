@@ -57,17 +57,19 @@ repos:
   # ── local hooks ──────────────────────────────────────────────────────
   - repo: local
     hooks:
-      # The design document is never committed: it carries real host details.
-      # .gitignore blocks both copies; this hook also blocks `git add -f`.
+      # Two files are never committed: the design document, which carries real
+      # host details, and CLAUDE.md, which records the maintainer's own process
+      # and what has gone wrong in this repository. `.gitignore` blocks both;
+      # this hook also blocks `git add -f`, which `.gitignore` cannot.
       - id: no-design-doc
-        name: the design document must not be committed
+        name: the local-only files must not be committed
         # A block scalar, not a plain one. The plain form was invalid YAML: the
         # `: ` inside `echo "ERROR: ..."` reads as a mapping, so pre-commit
         # could not load this file at all and *every* hook below was silently
         # inert — including gitleaks. Folded style has no such trap.
         entry: >-
-          bash -c 'if git diff --cached --name-only | grep -qE "^docs/(_local|design)/";
-          then echo "ERROR: the design document is local-only and must not be committed";
+          bash -c 'if git diff --cached --name-only | grep -qE "^(docs/(_local|design)/|CLAUDE.md$)";
+          then echo "ERROR: that file is local-only and must not be committed";
           exit 1; fi'
         language: system
         pass_filenames: false

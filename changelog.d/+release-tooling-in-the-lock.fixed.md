@@ -7,3 +7,7 @@ The release tooling is in `uv.lock` instead of being resolved fresh on every run
 `ci.yml` gains the other half: a ten-second step on every pull request that asks the tooling to work out a version and fails if it cannot. The breakage was invisible until somebody wanted a release; now it is visible on the change that introduces it.
 
 Found by `mode: dry-run`, which is what that mode is for — it printed the error and stopped, having touched nothing.
+
+`ci.yml`'s own first attempt at that check then failed for a second, unrelated reason, and the fix is worth recording because it is not a workaround. On a pull request `actions/checkout` leaves a **detached HEAD** at the merge commit, and python-semantic-release refuses to match a release group there — "Detached HEAD state cannot match any release groups". The step now points a local `main` at that commit before asking: the merge commit is exactly what `main` would become, which is the state the check is about.
+
+It uses `version --print` rather than `--version`, and that was measured rather than assumed. Against the GitPython that broke the release path, `--version` exits 0 and would have caught nothing; `version --print` exits 1.
