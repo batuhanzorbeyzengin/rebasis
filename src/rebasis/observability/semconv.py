@@ -13,11 +13,29 @@ prompts and content belong in span *events*, not attributes, because attributes
 are always indexed and size-limited. rebasis records no content at all, so the
 problem does not arise — but conforming keeps the right answer ready for the day
 someone proposes "let's add the chunk text too".
+
+**Two names that are not here, and why.**
+
+``gen_ai.provider.name`` is a current core attribute alongside the operation and
+the model, and it is absent because its value is not reachable. The honest value
+is the embedding backend — ``sentence-transformers``, ``ollama``, an
+OpenAI-compatible endpoint — and the ``Embedder`` protocol does not carry the
+entry-point name it was opened under. Adding one would change the protocol and
+every backend implementing it, which is a real change to make for a real reason
+rather than for conformance to a namespace that is still development-status. It
+is listed as absent rather than emitted as a guess.
+
+``OTEL_SEMCONV_STABILITY_OPT_IN`` was read here and nothing branched on it. The
+variable exists so a library can emit an old attribute name and a new one during
+a migration period; this project has never emitted an old one — ``db.system.name``
+is the stable spelling and is the only spelling it has ever used — so there is
+nothing for an opt-in to select between. A reader is entitled to assume a
+function that parses a standard environment variable does something with it, and
+this one could not.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Final
 
 __all__ = [
@@ -33,7 +51,6 @@ __all__ = [
     "REBASIS_PROBE_DECISION",
     "SERVICE_NAME",
     "SERVICE_VERSION",
-    "semconv_opt_in",
 ]
 
 # Resource attributes
@@ -46,7 +63,11 @@ GEN_AI_REQUEST_MODEL: Final = "gen_ai.request.model"
 GEN_AI_EMBEDDINGS_DIMENSION_COUNT: Final = "gen_ai.embeddings.dimension.count"
 OPERATION_EMBEDDINGS: Final = "embeddings"
 
-# Database semantic conventions
+# Database semantic conventions. STABLE, unlike the block above — a collector
+# already knows what to do with this one. There is no vector-database convention
+# to conform to (the upstream issue asking for one is open and unassigned), so
+# the backend's declared name goes in the standard field and rebasis invents no
+# `db.vector.*` namespace of its own.
 DB_SYSTEM_NAME: Final = "db.system.name"
 
 # rebasis-specific attributes
@@ -55,13 +76,3 @@ REBASIS_ADAPTER_DIRECTION: Final = "rebasis.adapter.direction"
 REBASIS_PROBE_ARR_R10: Final = "rebasis.probe.arr_r10"
 REBASIS_PROBE_DECISION: Final = "rebasis.probe.decision"
 REBASIS_MIGRATE_STATE: Final = "rebasis.migrate.state"
-
-
-def semconv_opt_in() -> frozenset[str]:
-    """Values of ``OTEL_SEMCONV_STABILITY_OPT_IN``.
-
-    The standard mechanism for opting into newer convention versions while a
-    namespace stabilises.
-    """
-    raw = os.environ.get("OTEL_SEMCONV_STABILITY_OPT_IN", "")
-    return frozenset(part.strip() for part in raw.split(",") if part.strip())
