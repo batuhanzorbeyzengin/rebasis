@@ -956,6 +956,7 @@ def _encode(embedder: Embedder, texts: list[str], *, kind: str) -> FloatArray:
         return np.empty((0, 0), dtype=np.float32)
 
     from rebasis.observability.semconv import (
+        GEN_AI_EMBEDDINGS_DIMENSION_COUNT,
         GEN_AI_OPERATION_NAME,
         GEN_AI_REQUEST_MODEL,
         OPERATION_EMBEDDINGS,
@@ -963,9 +964,13 @@ def _encode(embedder: Embedder, texts: list[str], *, kind: str) -> FloatArray:
 
     model_id = embedder.profile.model_id
     started = time.perf_counter()
+    # The dimension is on the span because it is the one number that explains a
+    # duration: the same corpus through a 384-dimension model and a 1024 one is
+    # the same `count` and a very different wait.
     corpus_attributes = {
         GEN_AI_OPERATION_NAME: OPERATION_EMBEDDINGS,
         GEN_AI_REQUEST_MODEL: model_id,
+        GEN_AI_EMBEDDINGS_DIMENSION_COUNT: embedder.profile.dim,
         "count": len(texts),
     }
 

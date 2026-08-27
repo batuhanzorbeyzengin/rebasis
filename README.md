@@ -23,6 +23,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python"></a>
   <a href="#status-01"><img src="https://img.shields.io/badge/version-0.1-orange" alt="Version"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/batuhanzorbeyzengin/rebasis"><img src="https://api.scorecard.dev/projects/github.com/batuhanzorbeyzengin/rebasis/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 A better embedding model comes out. Your vault, codebase or agent memory is
@@ -89,6 +90,40 @@ everything around it, because the alignment is the easy part.
   part-way leaves two embedding spaces in one collection, and no ordinary query
   is correct against both. rebasis detects that, says so unprompted, and can
   serve such an index correctly while the job finishes.
+
+## Where this sits
+
+Two things worth knowing before you evaluate it, both of which cut against the
+project as easily as for it.
+
+**No vector database offers this, and each of them says so in its own
+documentation.** Where a vendor documents changing the embedding model of an
+existing collection, the documented path is to re-embed the corpus. Qdrant's
+[migration tutorial](https://qdrant.tech/documentation/tutorials-operations/embedding-model-migration/)
+gives two routes — blue-green and named vectors — and both "re-embed the points
+using the new embedding model" from text kept in the payload. Weaviate's
+[vectorizer migration](https://docs.weaviate.io/weaviate/tutorials/vectorizer-migration)
+copies to a new collection where "vectors will be auto-generated". What they
+*do* offer, and offer well, is a **zero-downtime cutover** once the re-embedding
+is done: a collection alias flipped instantly, with instant rollback. That is a
+real answer to a different question. rebasis' question is whether you have to
+pay for the re-embedding at all.
+
+**The technique is not this project's, and the strongest published result for it
+did not reproduce here.**
+[Drift-Adapter](https://aclanthology.org/2025.emnlp-main.805.pdf) (EMNLP 2025)
+evaluates the same three adapters on the same problem and reports recovering
+**95–99%** of a full re-embedding. Run on its own corpora, its own model pair and
+its own fit budget, this project's harness measures **0.24 to 0.50** — and an
+adapter-independent ceiling puts the published band above what the old space can
+hold. Either the reproduction differs from the paper in a way neither document
+has identified, or the published figures do not describe what an end-to-end
+retrieval measurement returns. [The workings](docs/vs-drift-adapter.md).
+
+What that means for you: **take this project's own band, not the published one.**
+Bridging recovers a mean of about **0.72** of a full reindex, and is worth doing
+in roughly one run in five of those measured. If a number sounds better than
+that, check which measurement produced it.
 
 ## Status: 0.1
 
@@ -292,7 +327,7 @@ in how much work went into the adapter.
 | **Chroma** | ✅ | ✅ | ✅ | ✅ | Tested from 0.5.5 through 1.x, across the Rust rewrite. |
 | **LanceDB** | ✅ | ✅ | ✅ | ✅ | Text comes from a column you name in the URI. |
 | **sqlite-vec** | ✅ | ✅ | ✅ | — | One file, no server, no dependencies. |
-| **Qdrant** | ✅ | ✅ | ✅ | ✅ | Local and server. Local mode locks its folder; rebasis releases it. |
+| **Qdrant** | ✅ | ✅ | ✅ | ✅ | Local and server. Local mode locks its folder for the whole command — run a server if you need concurrent readers. |
 | **FAISS** | ✅ | ◐ | ◐ | — | An index, not a database — see below. |
 | in-memory | ✅ | ✅ | ✅ | — | For tests, and for vectors you already hold. |
 

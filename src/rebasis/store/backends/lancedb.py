@@ -33,6 +33,16 @@ if TYPE_CHECKING:
 
 __all__ = ["LanceDBStore"]
 
+#: What to check when a store will not open at all. Shared wording because the
+#: distinction it draws is the same on every backend: a database that cannot be
+#: opened (RB-E3000) is a different problem from one that opened and does not
+#: hold the collection you named (RB-E3003), and a user who is told the wrong one
+#: looks in the wrong place.
+HINT = (
+    "Check the path exists and is readable. A store that cannot be opened is a "
+    "different problem from a collection that is not in it, which reports RB-E3003."
+)
+
 DEFAULT_BATCH = 1000
 
 #: Column names tried in order when the caller does not say. Covers what the
@@ -90,7 +100,19 @@ class LanceDBStore:
                 context={"store_backend": "lancedb"},
             )
 
-        connection = lancedb.connect(uri.path or ".", **kwargs)
+        # Opening the database and finding the table inside it are different
+        # failures, and only the second was converted. `lancedb.connect` raises
+        # `FileNotFoundError` on a path that is not there — not a rebasis error,
+        # and carrying no code for a user to look up.
+        try:
+            connection = lancedb.connect(uri.path or ".", **kwargs)
+        except Exception as exc:
+            raise StoreError(
+                f"LanceDB could not open {uri.path or '.'!r}.",
+                hint=HINT,
+                context={"store_backend": "lancedb"},
+                cause=exc,
+            ) from exc
         try:
             table = connection.open_table(uri.collection)
         except Exception as exc:

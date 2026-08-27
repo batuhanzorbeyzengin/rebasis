@@ -43,6 +43,16 @@ if TYPE_CHECKING:
 
 __all__ = ["SqliteVecStore", "serialize_f32"]
 
+#: What to check when a store will not open at all. Shared wording because the
+#: distinction it draws is the same on every backend: a database that cannot be
+#: opened (RB-E3000) is a different problem from one that opened and does not
+#: hold the collection you named (RB-E3003), and a user who is told the wrong one
+#: looks in the wrong place.
+HINT = (
+    "Check the path exists and is readable. A store that cannot be opened is a "
+    "different problem from a collection that is not in it, which reports RB-E3003."
+)
+
 DEFAULT_BATCH = 1000
 
 #: Tried in order when the URI does not name the metadata table's columns.
@@ -497,7 +507,19 @@ def _connect(path: str, **kwargs: Any) -> sqlite3.Connection:
             cause=exc,
         ) from exc
 
-    connection: sqlite3.Connection = sqlite3.connect(path, **kwargs)
+    # `sqlite3.connect` raises `OperationalError` for a directory that is not
+    # there, a file that cannot be read, and several other things. None of them
+    # is a rebasis error, and all of them used to reach the caller as one more
+    # thing to search for.
+    try:
+        connection: sqlite3.Connection = sqlite3.connect(path, **kwargs)
+    except sqlite3.Error as exc:
+        raise StoreError(
+            f"sqlite-vec could not open {path!r}.",
+            hint=HINT,
+            context={"store_backend": "sqlite-vec"},
+            cause=exc,
+        ) from exc
     connection.row_factory = sqlite3.Row
     try:
         connection.enable_load_extension(True)  # noqa: FBT003 - sqlite3's own signature

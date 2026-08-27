@@ -27,6 +27,11 @@ ENVIRONMENT_VARIABLES: Final[dict[str, str]] = {
     "REBASIS_LOG_LEVEL": "Log level: DEBUG, INFO, WARNING, ERROR.",
     "REBASIS_LOG_FORMAT": "auto, console or json. Defaults to json when piped.",
     "REBASIS_LOG_FILE": "Also write logs to this path.",
+    # Read by `observability/env.py` and absent from this table until now, which
+    # made the docstring above false: `doctor` printed the knobs and this was not
+    # among them, so the one variable an orchestrated deployment most wants was
+    # the one it had to find by grepping.
+    "REBASIS_ENV": "server to select the long-running defaults: INFO, json, no colour.",
     "REBASIS_STATE_DIR": "Where state lives. Defaults to ./.rebasis",
     "REBASIS_MAX_MEMORY": "Memory ceiling, e.g. 2GB. The batch size is derived from it.",
     "REBASIS_DEVICE": "auto, cpu, cuda, cuda:N or mps.",

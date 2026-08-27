@@ -153,6 +153,57 @@ def test_dimension_mismatch_raises_a_rebasis_error(store: Any) -> None:
 
 
 @pytest.mark.contract
+@pytest.mark.parametrize("backend", LIVE_BACKENDS)
+def test_a_store_that_will_not_open_raises_a_rebasis_error(backend: str) -> None:
+    """The other half of the boundary rule, and four backends failed it.
+
+    `test_dimension_mismatch_raises_a_rebasis_error` covers a store that opened.
+    Nothing covered the store that does not open at all, which is the more common
+    thing to get wrong on a first run: a path typed with a missing directory, a
+    database owned by another user, a volume that is not mounted yet.
+
+    Measured before this test existed, against `/proc/1/nope` — a path that
+    exists as a parent and refuses everything under it. Only FAISS converted.
+    Chroma raised `chromadb.errors.InternalError`, LanceDB and Qdrant raised
+    `FileNotFoundError`, sqlite-vec raised `sqlite3.OperationalError`. Each
+    reached the caller with no `RB-Exxxx` code and no next step — and
+    `rebasis doctor --store` on such a path printed the leaked exception right
+    next to its own note that a leaked client-library exception is a bug.
+
+    `/proc/1/nope` rather than a `tmp_path` child, because a temporary directory
+    is writable and several of these backends will happily create a database
+    there rather than failing. What is wanted is a path that cannot be opened,
+    not one that is merely empty.
+    """
+    if backend == "faiss":
+        uri = "faiss:///proc/1/nope.faiss"
+    elif backend == "sqlite-vec":
+        uri = "sqlite-vec:///proc/1/nope.db#vec_documents"
+    else:
+        uri = f"{backend}:///proc/1/nope#documents"
+
+    # Spelled out rather than derived from the backend name. The first version
+    # of this test derived it, asked for `chroma` and `qdrant`, and skipped both
+    # while they were installed — the exact failure `ci.yml` greps for, and the
+    # reason it does: a skipped test reports the same green summary as a passing
+    # one. The import names are `chromadb` and `qdrant_client`.
+    module = {
+        "chroma": "chromadb",
+        "faiss": "faiss",
+        "lancedb": "lancedb",
+        "qdrant": "qdrant_client",
+        "sqlite-vec": "sqlite_vec",
+    }[backend]
+    pytest.importorskip(module, reason=f"the {backend} extra is not installed")
+
+    with pytest.raises(RebasisError) as raised:
+        open_store(uri)
+
+    assert raised.value.code.startswith("RB-E"), "the error must carry a code"
+    assert raised.value.hint, "and a next step"
+
+
+@pytest.mark.contract
 def test_capabilities_are_truthful(store: Any) -> None:
     """A declared capability must actually work.
 

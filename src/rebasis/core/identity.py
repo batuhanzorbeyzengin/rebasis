@@ -35,8 +35,27 @@ class IdentityAdapter(BaseAdapter):
         return cls(input_dim=int(src.shape[1]), output_dim=int(dst.shape[1]))
 
     def apply(self, x: FloatArray) -> FloatArray:
-        """Return the input, matched to the output dimension."""
-        return pad_or_truncate(as_float32(x), self.output_dim)
+        """Return the input, matched to the output dimension — as a new array.
+
+        **The copy is the correctness, not an oversight.** Every other adapter
+        allocates because it multiplies; this one has nothing to multiply by, so
+        without the copy it hands back the caller's own array. ``Bridge`` then
+        normalises the result in place — deliberately, to save an allocation on a
+        path budgeted at 15 µs — and the caller's query vector is modified under
+        them.
+
+        Measured before it was fixed: ``bridge.to_index_space(q)`` with this
+        adapter left ``q`` normalised, so a caller reusing ``q`` for a second
+        index, a rerank or a log line was working with a different vector from
+        the one they encoded. Nothing raised. The two paths that make it
+        reachable are ``fit --method identity`` and loading a ``.rbs`` that
+        records that type; ``auto`` never selects it, which is why this survived.
+
+        The cost is one allocation on an adapter nobody should be serving with
+        anyway, and :meth:`BaseAdapter.apply` now states the contract the rest of
+        them already kept.
+        """
+        return pad_or_truncate(as_float32(x), self.output_dim).copy()
 
     def state_dict(self) -> dict[str, FloatArray]:
         """No weights."""

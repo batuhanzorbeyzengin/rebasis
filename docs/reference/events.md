@@ -31,11 +31,12 @@ and reformatted; an audit record may not.
 | `fit.calibrator.fitted` | INFO | no | `count`, `score_shift` | Isotonic score calibrator fitted. |
 | `migrate.adapter.refitted` | INFO | **yes** | `job_id`, `adapter_type`, `arr_r10` | Adapter refitted mid-migration. |
 | `migrate.batch.completed` | INFO | no | `job_id`, `batch_index`, `count`, `duration_ms`, `state` | One migration batch finished. This is the per-batch summary that replaces per-record logging. |
+| `migrate.batch.split` | INFO | no | `job_id`, `count`, `error_code` | The store rejected a batch; it was halved and each half written separately. |
 | `migrate.batch.throttled` | WARNING | no | `job_id`, `batch_index`, `peak_rss_bytes` | Batch size halved because memory approached the ceiling. |
 | `migrate.durability.verified` | INFO | **yes** | `job_id`, `count` | A fresh connection confirmed the writes are still there. |
 | `migrate.index.measured` | INFO | no | `store_backend`, `count`, `ann_recall`, `duration_ms` | How much of the exact answer the store's own search returns, measured against streamed exact kNN over the same collection. Emitted either side of a migration: rewriting a vector does not rewrite the graph that was built around it. |
 | `migrate.index.mixed` | WARNING | no | `job_id`, `count`, `state`, `store_backend` | The job stopped with records left, so the index now holds vectors from two embedding spaces and no single query is correct against all of it. `count` is how many records still carry the old model's geometry. |
-| `migrate.item.failed` | WARNING | no | `job_id`, `record_id`, `error_code` | A single record failed. |
+| `migrate.item.failed` | WARNING | no | `job_id`, `record_id`, `count`, `error_code` | Records the store would not take, after retrying and splitting the batch. |
 | `migrate.job.completed` | INFO | **yes** | `job_id`, `count`, `duration_ms` | Migration completed. |
 | `migrate.job.paused` | WARNING | **yes** | `job_id`, `state`, `error_code` | Migration paused; resumable. |
 | `migrate.job.resumed` | INFO | **yes** | `job_id`, `state` | Migration resumed. |

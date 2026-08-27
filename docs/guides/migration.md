@@ -308,6 +308,23 @@ A paused job is a job stopped short, so everything under
 applies to it. Pausing is not a way to stop safely and walk away; it is a way to
 stop safely and come back.
 
+### When your orchestrator stops it
+
+A Kubernetes `Job`, an Airflow task and an Argo step all end a process the same
+way: **SIGTERM, a grace period, then SIGKILL.** `migrate` catches the first
+SIGTERM and turns it into exactly the request `rebasis pause` makes — the run
+stops at the next batch boundary and says which signal asked. `rebasis resume`
+picks it up.
+
+**The grace period has to outlast a batch.** Kubernetes' default is thirty
+seconds; a batch that takes longer is still killed part-way. Raise
+`terminationGracePeriodSeconds` above your batch duration, or lower `--batch`
+below the period you have. [Running it in production](operations.md#being-terminated)
+has the details.
+
+The second signal is not caught, so a supervisor escalating — or a second Ctrl-C
+— stops the process at once.
+
 ## Half the shadow, if you want it
 
 ```bash
@@ -489,9 +506,140 @@ Removing a *shadow copy* makes that job permanently irreversible, so it needs
 
 ## When a batch fails
 
-The batch is marked `FAILED`, the job stops, and the failing records keep their
-error code. Everything already written stays written; everything not yet written
-stays queued. Fix the cause, then `rebasis resume <job-id>`.
+**The run does not stop.** The records that could not be written are marked
+`FAILED` with their error code, the ones that could are marked `DONE`, and the
+next batch starts. A run therefore finishes with a count of failures rather than
+at the first one, which is what makes a partial network outage recoverable in one
+`resume` instead of many.
+
+Two things happen before anything is given up on.
+
+**The batch is retried.** `StoreWriteFailed` declares itself transient — a store
+that refused a write because a node was rebalancing will usually take it a moment
+later — so the write is attempted three times with exponential backoff and
+jitter. Every attempt after the first is logged, so a run that took four extra
+seconds says why.
+
+**Then the batch is split.** If it still fails, it is halved and each half is
+written separately, recursively, so the records that were always fine get
+written and only the ones the store actually refuses end up in the failed list.
+A single oversized payload used to cost its two hundred and fifty-five
+neighbours a place in that list. Splitting is bounded at four levels: a store
+that is simply unreachable fails every half, and splitting all the way down would
+cost 511 writes to learn what the first one already said.
+
+The halves are not retried. The batch's own three attempts already established
+that waiting does not help; what is left to find out is *which* record.
+
+Look at what failed, fix the cause, then `rebasis resume <job-id>` — a resume
+returns failed records to the queue.
 
 The one thing that never happens is a partially-written record: the shadow is
 taken first, the write is one call, and the read-back verifies it.
+
+## A runbook
+
+What to do when a migration goes wrong, in the order to do it. Every command
+here is read-only unless it says otherwise.
+
+### It stopped and you do not know why
+
+```bash
+rebasis status --json | jq '.[] | {job_id, state, pause_requested, done, remaining, failed}'
+```
+
+`state` is what the engine last recorded. Six things stop a run, and `status`
+distinguishes them:
+
+| `state` | `pause_requested` | What happened | What to do |
+|---|---|---|---|
+| `running` | `false` | It is still going | Nothing |
+| `running` | `true` | A pause or a signal is in flight | Wait for the batch |
+| `paused` | — | Asked to stop: `pause`, SIGTERM, low battery, memory pressure | `rebasis resume <job-id>` |
+| `paused` with `failed > 0` | — | A batch failed and the job stopped | Read the error code first |
+| `completed` | — | Nothing is wrong | — |
+| `failed` | — | It could not continue | Read the error code |
+
+If `rebasis status` shows nothing, you are pointed at the wrong state directory.
+`REBASIS_STATE_DIR`, or `--state-dir`.
+
+### The process is gone and the lock is still held
+
+```bash
+rebasis doctor --store "$STORE"
+```
+
+The lock records the holder's PID, the operation and the start time, and rebasis
+will tell you whether that process still exists. **It will not break the lock for
+you.** Being wrong about a process being dead is how two writers end up in one
+manifest — so if it says the holder is gone, remove
+`<state-dir>/rebasis.lock` yourself, having checked.
+
+### Queries got worse and nothing else changed
+
+The most likely cause is the one nothing else detects: **the index is holding two
+embedding spaces at once**, because a migration stopped part-way.
+
+```bash
+rebasis status --json | jq '.[] | select(.mixed_space != null) | .mixed_space'
+```
+
+Measured, an ordinary bridged query against a half-migrated collection drops from
+a hit rate above 0.90 to below 0.65 — silently. Three ways out, in order of how
+much you have to change:
+
+1. **Finish the job.** `rebasis resume <job-id>`. The condition ends when the
+   queue empties.
+2. **Serve it correctly meanwhile.** `rebasis.serve.MixedSpaceSearch` restores it
+   to above 0.90 at every stage — see
+   [Searching one anyway](#searching-one-anyway).
+3. **Go back.** `rebasis rollback <job-id>`, below.
+
+### A batch failed
+
+The error code says which of these it is, and every code is in the
+[error reference](../reference/errors.md).
+
+| Code | Usually means | What to do |
+|---|---|---|
+| `RB-E6002` | One or more records failed | The ids and their codes are in the queue; `rebasis status` counts them |
+| `RB-E3004` | The store rejected a write | Read the store's own logs. Everything already written stays written |
+| `RB-E6004` | Out of disk | The pre-flight sized the job; something else filled the disk since |
+| `RB-E6005` | The store took a write and did not keep it | **Stop.** This is the durability check failing on a fresh connection — do not resume until you know why |
+| `RB-E3005` | The adapter's width does not match the index's | The wrong adapter. Check `rebasis eval <adapter> --verify` before resuming |
+| `RB-E4002` | The adapter refuses this index | Fingerprint mismatch, or the wrong direction — `migrate` needs `--direction old_to_new` |
+| `RB-E7003` | The shadow copy is missing | Rollback cannot restore. Do not run `--no-keep-original` again |
+| `RB-E7004` | The state lock is held | Another writer, or a stale lock — see above |
+
+Fix the cause, then `rebasis resume <job-id>`. Everything already written stays
+written; everything not yet written stays queued.
+
+### You want it undone
+
+```bash
+rebasis rollback <job-id>
+```
+
+Restores from the shadow copy, which is taken **before** each batch is
+overwritten. Two things to know before you rely on it:
+
+- It restores the vectors, not the index structure. On a graph backend, run
+  `--rebuild-index` afterwards if the health check reports a drop.
+- If the job ran with `--no-keep-original` there is no shadow and no way back.
+  That flag needs `--i-understand` for this reason.
+
+### You are not sure the rollback worked
+
+```bash
+rebasis doctor --store "$STORE"
+```
+
+Read-only in every path. It opens the store, checks the SQLite file's integrity,
+reads the recorded encoding profile, and says whether the collection holds two
+embedding spaces. Run it first whenever anything is confusing — it is also the
+thing to attach to a bug report, as `--json`.
+
+### None of the above
+
+`rebasis doctor --json` and an issue. It carries no document text, no vectors and
+no credentials by construction, so it is safe to paste.

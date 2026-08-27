@@ -37,6 +37,16 @@ if TYPE_CHECKING:
 
 __all__ = ["ChromaStore"]
 
+#: What to check when a store will not open at all. Shared wording because the
+#: distinction it draws is the same on every backend: a database that cannot be
+#: opened (RB-E3000) is a different problem from one that opened and does not
+#: hold the collection you named (RB-E3003), and a user who is told the wrong one
+#: looks in the wrong place.
+HINT = (
+    "Check the path exists and is readable. A store that cannot be opened is a "
+    "different problem from a collection that is not in it, which reports RB-E3003."
+)
+
 #: Chroma pages its reads; this bounds peak memory per page.
 DEFAULT_BATCH = 1000
 
@@ -72,7 +82,20 @@ class ChromaStore:
                 context={"store_backend": "chroma"},
             )
 
-        client = chromadb.PersistentClient(path=uri.path or ".", **kwargs)
+        # Wrapped, because chromadb raises its own `InternalError` when the path
+        # cannot be opened, and that used to reach the caller unconverted:
+        # `rebasis doctor --store` on a bad path printed
+        # "InternalError: Permission denied" next to its own note that a leaked
+        # client-library exception is a bug. It was.
+        try:
+            client = chromadb.PersistentClient(path=uri.path or ".", **kwargs)
+        except Exception as exc:
+            raise StoreError(
+                f"Chroma could not open {uri.path or '.'!r}.",
+                hint=HINT,
+                context={"store_backend": "chroma"},
+                cause=exc,
+            ) from exc
         try:
             collection = client.get_collection(name=uri.collection)
         except Exception as exc:

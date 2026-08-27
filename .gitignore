@@ -54,6 +54,10 @@ __pycache__/
 .Python
 build/
 dist/
+# The release workflow writes the CycloneDX bill of materials here before
+# attaching it to the GitHub release. It is generated from uv.lock, so committing
+# it would be a second copy of a fact the lock already carries.
+sbom/
 *.egg-info/
 .eggs/
 .installed.cfg

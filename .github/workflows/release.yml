@@ -196,9 +196,11 @@ jobs:
           enable-cache: true
           cache-suffix: rehearse
       - name: assemble the changelog and tag, locally
+        id: version
         run: |
           NEXT=$(uv run --with python-semantic-release semantic-release version --print)
           TAG=$(uv run --with python-semantic-release semantic-release version --print-tag)
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           uv run towncrier build --yes --version "$NEXT"
           git config user.name "rebasis release"
           git config user.email "noreply@github.com"
@@ -222,6 +224,20 @@ jobs:
               *+*) echo "::error::$f carries a local version segment — the tree was dirty at build time."; exit 1 ;;
             esac
           done
+      - name: the bill of materials
+        # Built in the rehearsal too, so a broken export is found here rather
+        # than during the release it would otherwise stop.
+        run: |
+          mkdir -p sbom
+          uv export --all-extras --no-emit-project --format cyclonedx1.5 \
+            -o "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['components']), 'components')" \
+            "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom/
+          retention-days: 30
       - name: publish to TestPyPI
         # `skip-existing`: a second rehearsal of the same version is a normal
         # thing to want, and TestPyPI refuses a re-upload. Skipping is the right
@@ -316,6 +332,35 @@ jobs:
             esac
           done
           ls dist/*"${{ steps.version.outputs.next }}"* >/dev/null
+      - name: the bill of materials
+        # CycloneDX 1.5, over the tree `uv.lock` actually resolves with every
+        # extra installed — a vulnerability in the chroma or torch half is one a
+        # user who installed that half has, and an SBOM of the core alone
+        # describes a tree almost nobody runs.
+        #
+        # It goes on the GitHub release rather than to PyPI, which accepts
+        # distributions and nothing else. "Can you provide an SBOM" is a standard
+        # question on an enterprise vendor questionnaire, and the answer being a
+        # link costs less than the answer being a conversation.
+        run: |
+          mkdir -p sbom
+          uv export --all-extras --no-emit-project --format cyclonedx1.5 \
+            -o "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['components']), 'components')" \
+            "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
+      - name: a GitHub release, carrying the SBOM
+        # `--notes-from-tag` would repeat the tag message; the changelog this run
+        # just assembled is the thing worth linking, and it is in the repository
+        # at the tag.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "rebasis ${{ steps.version.outputs.next }}" \
+            --notes "The changelog for this release is in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.tag }}/CHANGELOG.md).
+
+          The attached CycloneDX SBOM covers the dependency tree \`uv.lock\` resolves with every extra installed. The distributions themselves are on [PyPI](https://pypi.org/project/rebasis/${{ steps.version.outputs.next }}/) and carry a PEP 740 attestation." \
+            "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
       - name: publish
         # Trusted Publishing — the token is minted for this run and expires
         # with it. There is no long-lived secret to leak. The action has produced

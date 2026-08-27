@@ -1,0 +1,9 @@
+Three documents an evaluator looks for and could not find.
+
+**[Stability and support](https://batuhanzorbeyzengin.github.io/rebasis/stability/)** says what may change and what may not: what 0.x means here, which three things carry the compatibility promise (the Python API, the CLI's names and exit codes, and the stable error codes), the deprecation window that starts at 1.0, and — being specific, because this is the part that matters — a table of what is gated on every pull request, what runs nightly on the project's own host, and what is only claimed. Windows has never run. Nobody has pointed `migrate` at an index they could not rebuild.
+
+It also states the Python support policy rather than leaving it in a `pyproject.toml` comment: rebasis follows [SPEC 0](https://scientific-python.org/specs/spec-0000/), so a Python release is dropped three years after it appears. **3.12 reaches that mark in Q4 2026**, and the floor rises to 3.13 then rather than drifting. The dependency floors go further back than SPEC 0 requires, deliberately — each is the oldest version the suite actually passes on, and the `lowest direct dependencies` job is what keeps that true.
+
+**SUPPORT.md** says where to ask, what to attach, and what to expect: a first response usually within a week, no promised fix date, and no commercial support, no SLA and no LTS branch — stated because finding out later is worse.
+
+**MAINTAINERS.md** names the single maintainer and then spends the rest of the file on what follows from that. A bus factor of one is the largest risk in depending on this, and the two things that reduce it are Apache-2.0 and the fact that the reasoning is written down — eleven ADRs with the measurement behind each, so somebody picking it up does not have to re-derive the decisions. A governance document is explicitly not among them: a file describing how multiple maintainers decide things, written by the only maintainer, describes nothing.
