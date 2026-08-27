@@ -40,8 +40,8 @@ jobs:
       # No `fetch-depth: 0`: nothing here derives a version from tags, and the
       # file list comes from `git ls-files`, which reads the index — a shallow
       # checkout has that in full.
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         # No cache to key: this job installs nothing.
       - name: every recorded title is the title arXiv carries
         # `--no-project`, and it is not a shortcut: the check is stdlib only, so

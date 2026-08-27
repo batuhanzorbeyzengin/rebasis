@@ -99,6 +99,43 @@ local attacker. Claiming otherwise would be false.
 
 While the project is 0.x, only the latest release receives fixes.
 
+## Known advisories in the dependency tree
+
+Two packages in the resolved tree carry open advisories with **no fixed version
+upstream**, so neither is closed by an upgrade. Both were assessed against how
+rebasis actually uses them rather than dismissed, and the reasoning is here so a
+reviewer does not have to repeat it.
+
+**chromadb — four advisories, none reachable through rebasis.**
+
+| | |
+|---|---|
+| [PYSEC-2026-311](https://osv.dev/PYSEC-2026-311) | Pre-authentication code injection via the `/api/v2/tenants/{tenant}/databases/{db}/collections` endpoint |
+| [GHSA-36p7-vc44-83pf](https://osv.dev/GHSA-36p7-vc44-83pf) | Authenticated code injection via the collection-update endpoint |
+| [GHSA-2wm9-hf6c-p5cr](https://osv.dev/GHSA-2wm9-hf6c-p5cr) | Missing authorisation validation across tenants |
+| [GHSA-xph7-9rjv-w5fr](https://osv.dev/GHSA-xph7-9rjv-w5fr) | `SimpleRBACAuthorizationProvider` ignores which tenant a permission applies to |
+
+All four are properties of the **Chroma server** — its HTTP API, its
+authentication and its authorisation providers. rebasis opens
+`chromadb.PersistentClient(path=...)` and nothing else: there is no `HttpClient`
+in the backend and the Chroma URI carries no host, so rebasis cannot connect to a
+Chroma server at all, with or without these bugs.
+
+That is a statement about rebasis, not about your deployment. **If you run a
+Chroma server, these advisories apply to it** and rebasis is not what protects
+you from them.
+
+**diskcache — [PYSEC-2026-2447](https://osv.dev/PYSEC-2026-2447), unsafe pickle
+deserialization.** It arrives through `llama-cpp-python`, an optional extra
+deliberately left out of `rebasis[all]` because it compiles from source. The
+attack requires write access to the cache directory, which is already local
+compromise: an attacker who can write there can write to the rest of your
+environment too. Not installing that extra removes the package.
+
+Re-checked weekly by the `Audit` workflow, which runs `pip-audit` over the tree
+`uv.lock` resolves with every extra. When a fix is published, the upgrade is a
+lockfile change.
+
 ## Regulatory scope
 
 Written down because a compliance reviewer would otherwise have to work it out,

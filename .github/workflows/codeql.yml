@@ -1,0 +1,59 @@
+# CodeQL — the dataflow half of the static analysis.
+#
+# `ruff` already runs with every rule enabled, which includes flake8-bandit's
+# security lints. Those are pattern checks: they see a dangerous call at the
+# place it is written. CodeQL follows values through the program, so it sees the
+# untrusted input three functions away from the call that consumes it — which is
+# the class of finding a linter structurally cannot produce.
+#
+# It is also the check OpenSSF Scorecard means by SAST, which scored 0 here while
+# the repository had a security linter on every rule. Worth having for the
+# analysis; the score is a side effect.
+#
+# Python needs no build: `build-mode: none` tells CodeQL to read the source
+# rather than watch a compiler. Free on a public repository — Advanced Security
+# is only required for private repositories in an organisation.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly. A query pack update can surface a finding on code that has not
+    # changed, and a scheduled run is the only thing that would notice.
+    - cron: "36 4 * * 4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze python
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Writes the findings to the Security tab. Nothing else is needed: the
+      # analysis reads the checkout and talks to no other part of the repository.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: initialise
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: python
+          build-mode: none
+          # `security-and-quality` over the default set. The default is tuned to
+          # keep noise low on a large codebase; this one is 28,000 lines with a
+          # coverage floor, and the extra queries are affordable.
+          queries: security-and-quality
+      - name: analyse
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:python"

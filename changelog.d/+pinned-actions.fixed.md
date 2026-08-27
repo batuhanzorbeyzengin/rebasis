@@ -1,0 +1,9 @@
+Every GitHub Action in every workflow is pinned by commit SHA instead of by tag, and every workflow declares a read-only default token.
+
+A tag is a mutable pointer. `actions/checkout@v7` is whatever the `v7` tag names *today*, and whoever can move that tag can run their code in this repository's CI — with whatever permissions the workflow granted. A commit SHA cannot be moved. The tag stays beside each pin as a comment so a reader can still see what version it is, and Dependabot updates both together.
+
+Forty of the forty-nine findings OpenSSF Scorecard reported were this, across seven workflow files. Two more were the token: GitHub's default `GITHUB_TOKEN` is write-scoped unless a workflow says otherwise, so `ci.yml` and `gpu-tests.yml` were granting every job write access to this repository for no reason. Both now declare `contents: read` at the top, and the jobs that need more say so themselves — the release job's `contents: write`, the Scorecard and CodeQL jobs' `security-events: write`.
+
+`codeql.yml` is new, and answers the SAST finding with something worth having rather than with a checkbox. `ruff` already runs every rule, which includes flake8-bandit's security lints — but those are pattern checks that see a dangerous call where it is written. CodeQL follows values through the program, so it sees the untrusted input three functions away from the call that consumes it, which a linter structurally cannot. Python needs no build step; it runs on every pull request and weekly, because a query-pack update can surface a finding on code that has not changed.
+
+The findings this repository cannot close are named in `SECURITY.md` rather than worked around: Code-Review counts pull requests reviewed by somebody other than their author and there is one maintainer, Branch-Protection is a setting that would block the release workflow's own push until a rule allows it, Fuzzing has none, and CII-Best-Practices wants a badge nobody has applied for.
