@@ -139,9 +139,25 @@ jobs:
         run: uv run python tools/check_coverage_floors.py
 
   no-torch:
-    name: no torch, no otel
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
+    name: core install (${{ matrix.os }})
+    timeout-minutes: 15
+    # **Two operating systems, and this is the job that can carry the second
+    # one.** The macOS leg was removed from the full suite because `faiss-cpu`
+    # and `torch` each link their own OpenMP runtime there and a process holding
+    # both aborts before either does any work — so it could not finish, and what
+    # was lost with it was coverage of the storage layer, which is exactly where
+    # the platforms differ (directory fsync, `os.replace`, a system sqlite3 that
+    # cannot load extensions) and exactly where a bug costs data rather than
+    # accuracy.
+    #
+    # A core-only install has neither library, so the conflict cannot arise. That
+    # makes this job the one place a second OS is free: it was already installing
+    # nothing optional, for its own unrelated reason.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -151,7 +167,7 @@ jobs:
           enable-cache: true
           # Distinct per job: parallel jobs sharing one key raced to
           # reserve it, and the losers logged a failed cache save.
-          cache-suffix: no-torch
+          cache-suffix: no-torch-${{ matrix.os }}
       - name: install the core package only
         # No extras at all: this is what `pip install rebasis` gives a user.
         run: |
