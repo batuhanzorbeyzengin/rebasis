@@ -109,7 +109,15 @@ class BaseAdapter(abc.ABC):
 
     @abc.abstractmethod
     def apply(self, x: FloatArray) -> FloatArray:
-        """Map vectors into the target space. Hot path — no validation."""
+        """Map vectors into the target space. Hot path — no validation.
+
+        **Must return a new array, never ``x`` itself.** Callers normalise the
+        result in place to save an allocation on a path budgeted at 15 µs, so an
+        implementation that aliases its input silently rewrites the caller's
+        query vector. Every adapter that multiplies gets this for free;
+        :class:`~rebasis.core.identity.IdentityAdapter` did not, and did rewrite
+        it until the contract was written down here.
+        """
 
     @abc.abstractmethod
     def state_dict(self) -> dict[str, FloatArray]:

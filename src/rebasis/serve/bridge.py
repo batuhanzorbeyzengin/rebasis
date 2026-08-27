@@ -22,6 +22,27 @@ request**, on a budget of 15 µs per query. Three consequences, all deliberate:
 The default direction is ``query_to_old``, which is what makes the bridge phase
 free of risk: the index is never written, so "rolling back" is just not using the
 adapter, and no shadow copy is needed.
+
+**Thread safety, stated because this object is held across requests.** A
+:class:`Bridge` is **immutable after** :meth:`load` and holds no per-call state:
+:meth:`to_index_space` reads the weights, allocates its own output and writes
+nothing back. **One instance may be shared by any number of threads**, which is
+what a WSGI or ASGI application serving concurrent requests needs, and there is
+no lock on the path — there is nothing to lock.
+
+Two consequences worth being explicit about. **Load once, at startup**, not per
+request: the validation :meth:`load` performs is the expensive half and the only
+half that touches the filesystem. And **the GIL is not what makes this safe** —
+the guarantee is the absence of mutable state, so it holds under free-threaded
+builds too.
+
+What is *not* thread-safe is anything that writes: :class:`~rebasis.serve.Cascade`
+with a shared :class:`~rebasis.serve.DiskVectorCache`, and every command under
+``rebasis migrate``, which is why those take a file lock. Serving does not.
+
+There is no ``async`` variant and there should not be: ``to_index_space`` is
+arithmetic on a small array with no I/O in it, so awaiting it would add an event
+loop hop to a call budgeted at 15 µs. Call it directly from a coroutine.
 """
 
 from __future__ import annotations

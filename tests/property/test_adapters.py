@@ -158,6 +158,45 @@ def test_apply_is_batch_invariant(dim: int, seed: int) -> None:
 @pytest.mark.property
 @FAST
 @given(dim=st.integers(16, 96), seed=st.integers(0, 2**31 - 1))
+def test_apply_never_hands_back_the_callers_own_array(dim: int, seed: int) -> None:
+    """`Bridge` normalises `apply`'s result in place, so aliasing rewrites the query.
+
+    The saving is deliberate — one allocation off a path budgeted at 15 µs — and
+    it is safe only while every adapter returns something new. `IdentityAdapter`
+    did not: with nothing to multiply by, `pad_or_truncate` handed back the input
+    unchanged whenever the widths already matched, and `to_index_space` then
+    normalised the caller's vector under them. Nothing raised, and `auto` never
+    selects that adapter, which is how it survived.
+
+    Asserted on identity *and* on the fitted adapters, because the property
+    belongs to `BaseAdapter.apply` rather than to any one implementation, and the
+    next adapter with a fast path is the one this test is really for.
+    """
+    rng = np.random.default_rng(seed)
+    src = l2_normalize(rng.standard_normal((300, dim)).astype(np.float32))
+    dst = l2_normalize(rng.standard_normal((300, dim)).astype(np.float32))
+    query = l2_normalize(rng.standard_normal((1, dim)).astype(np.float32))
+
+    for adapter in (
+        IdentityAdapter.fit(src, dst),
+        ProcrustesAdapter.fit(src, dst),
+        CenteredProcrustesAdapter.fit(src, dst),
+        LinearAdapter.fit(src, dst),
+    ):
+        name = type(adapter).__name__
+        out = adapter.apply(query)
+        assert out is not query, f"{name}.apply returned the caller's array"
+        assert not np.shares_memory(out, query), f"{name}.apply returned a view of the input"
+
+        # The property that actually bites: the whole serving call, unscaled.
+        before = query.copy()
+        l2_normalize(adapter.apply(query), copy=False)
+        assert np.array_equal(query, before), f"{name} let the caller's query be rewritten"
+
+
+@pytest.mark.property
+@FAST
+@given(dim=st.integers(16, 96), seed=st.integers(0, 2**31 - 1))
 def test_output_dimension_is_always_honoured(dim: int, seed: int) -> None:
     """Whatever the input width, the output matches the index's dimension."""
     rng = np.random.default_rng(seed)
