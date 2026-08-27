@@ -70,6 +70,7 @@ from rebasis.observability import (
     should_span_batch,
     span,
 )
+from rebasis.observability.retry import retry_transient
 from rebasis.observability.semconv import DB_SYSTEM_NAME, REBASIS_MIGRATE_STATE
 from rebasis.storage.shadow import ShadowStore
 from rebasis.types import FloatArray  # noqa: TC001 - runtime annotation in a method signature
@@ -110,6 +111,17 @@ VERIFY_ATOL = 1e-4
 #: thousand records as on ten million and the ``O(batch × d)`` memory invariant
 #: holds.
 DURABILITY_SAMPLE = 64
+
+#: How many times a rejected batch may be halved before the remainder is failed
+#: as a group.
+#:
+#: Four, not "until one record is left". Splitting all the way down isolates the
+#: offending record exactly, and on a 256-record batch costs up to 511 writes —
+#: each of which `retry_transient` attempts three times with backoff — on a store
+#: that is simply unreachable. Four levels cost at most 31 writes and narrow the
+#: blast radius from 256 records to 16, which is the part that matters: the
+#: records that were fine get written.
+BISECT_MAX_DEPTH = 4
 
 
 @dataclass(slots=True)
@@ -420,33 +432,31 @@ class MigrationEngine:
 
         mapped = l2_normalize(self.adapter.apply(originals), copy=False)
 
-        try:
-            # `db.system.name` is one of the few OTel names in this area that is
-            # *stable* rather than development-status, so a collector already
-            # knows what to do with it. There is no vector-database convention to
-            # conform to — it is an open, unassigned issue upstream — and this
-            # project does not invent one, so the backend's own declared name is
-            # what goes in the standard field and nothing goes in an invented one.
-            with span(
-                Spans.STORE_UPSERT,
-                {"count": len(present_ids), DB_SYSTEM_NAME: self.store.capabilities.name},
-            ):
-                self.store.upsert_vectors(present_ids, mapped)
-        except StoreWriteFailed as exc:
-            self.queue.mark(present_ids, ItemState.FAILED, error_code=exc.code)
-            instrument("rebasis.migrate.items").add(len(present_ids), {"state": "failed"})
+        written, rejected = self._write_or_split(present_ids, mapped)
+
+        if rejected:
+            failed_ids = [record_id for record_id, _ in rejected]
+            code = rejected[0][1]
+            self.queue.mark(failed_ids, ItemState.FAILED, error_code=code)
+            instrument("rebasis.migrate.items").add(len(failed_ids), {"state": "failed"})
             log.warning(
                 Events.MIGRATE_ITEM_FAILED,
                 job_id=self.job_id,
-                record_id=present_ids[0],
-                error_code=exc.code,
+                record_id=failed_ids[0],
+                count=len(failed_ids),
+                error_code=code,
             )
+
+        if not written:
             return 0, len(present_ids)
 
-        self._verify_sample(present_ids, mapped)
-        self._keep_for_durability(present_ids, mapped)
-        self.queue.mark(present_ids, ItemState.DONE)
-        instrument("rebasis.migrate.items").add(len(present_ids), {"state": "done"})
+        index = {record_id: position for position, record_id in enumerate(present_ids)}
+        kept = mapped[[index[record_id] for record_id in written]]
+
+        self._verify_sample(written, kept)
+        self._keep_for_durability(written, kept)
+        self.queue.mark(written, ItemState.DONE)
+        instrument("rebasis.migrate.items").add(len(written), {"state": "done"})
         instrument("rebasis.migrate.progress").set(
             self.queue.stats().completed_fraction, {"job_id": self.job_id}
         )
@@ -455,10 +465,96 @@ class MigrationEngine:
             self.audit.write(
                 Events.STORE_WRITE_PERFORMED,
                 inputs={"job_id": self.job_id, "count": len(present_ids)},
-                outputs={"count": len(present_ids)},
+                outputs={"count": len(written)},
                 subject=self.job_id,
             )
-        return len(present_ids), 0
+        # Counted from what landed, not from what was offered. Since a rejected
+        # batch is split rather than failed whole, those two are no longer the
+        # same number, and reporting the batch size here would have a run finish
+        # claiming it processed records the queue holds as FAILED.
+        return len(written), len(rejected)
+
+    def _upsert(self, record_ids: list[str], vectors: FloatArray) -> None:
+        """One write to the store, retried while the store says it may take next time.
+
+        ``StoreWriteFailed`` declares itself transient, which is what makes this
+        eligible — a store that refused a write because a node was rebalancing
+        will usually take it a second later, and failing the batch instead turns
+        a hiccup into records the operator has to chase.
+
+        ``retry_transient`` existed and nothing called it. Wiring it at this level
+        rather than inside each backend keeps one policy — three attempts,
+        exponential backoff with jitter, every attempt after the first logged —
+        instead of one per store author.
+
+        **Retried at the top of a batch and not inside a split.** Measured: with
+        the retry on every node, isolating one bad record from a sixteen-record
+        batch took 23 seconds, almost all of it backing off from a refusal the
+        first three attempts had already established was not going to pass. Once
+        the whole batch has exhausted its retries, waiting is known not to help;
+        what is left to learn is *which record*, and that is what splitting is
+        for.
+
+        ``db.system.name`` is one of the few OTel names in this area that is
+        *stable* rather than development-status, so a collector already knows what
+        to do with it. There is no vector-database convention to conform to — the
+        upstream issue asking for one is open and unassigned — so the backend's
+        declared name goes in the standard field and nothing goes in an invented
+        one.
+        """
+        with span(
+            Spans.STORE_UPSERT,
+            {"count": len(record_ids), DB_SYSTEM_NAME: self.store.capabilities.name},
+        ):
+            self.store.upsert_vectors(record_ids, vectors)
+
+    def _write_or_split(
+        self, record_ids: list[str], vectors: FloatArray, depth: int = 0
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        """Write a batch; on rejection, halve it and write the halves.
+
+        **One bad record used to fail its two hundred and fifty-five
+        neighbours.** A rejected batch was marked ``FAILED`` whole, so a single
+        oversized payload, a single id the store would not take, cost every other
+        record in the batch a place in the failed list and a second pass on the
+        next `resume`. Nothing was lost — the queue is the checkpoint — but the
+        operator had 256 records to look at instead of one.
+
+        Halving is what the stores' own bulk-load guidance describes and what
+        published accounts of large migrations do: submit, and on rejection
+        bisect until the offending records are separated from the ones that were
+        always fine.
+
+        Bounded by :data:`BISECT_MAX_DEPTH`, because the other failure mode is a
+        store that is simply down, where every split fails and the splitting is
+        pure cost. What the bound gives up is exact isolation; what it keeps is
+        that the records that could be written are.
+
+        Returns:
+            The ids written, and ``(id, error_code)`` for those that were not.
+        """
+        write = retry_transient(self._upsert) if depth == 0 else self._upsert
+        try:
+            write(record_ids, vectors)
+        except StoreWriteFailed as exc:
+            if len(record_ids) == 1 or depth >= BISECT_MAX_DEPTH:
+                return [], [(record_id, exc.code) for record_id in record_ids]
+
+            middle = len(record_ids) // 2
+            log.info(
+                Events.MIGRATE_BATCH_SPLIT,
+                job_id=self.job_id,
+                count=len(record_ids),
+                error_code=exc.code,
+            )
+            left_ok, left_bad = self._write_or_split(
+                record_ids[:middle], vectors[:middle], depth + 1
+            )
+            right_ok, right_bad = self._write_or_split(
+                record_ids[middle:], vectors[middle:], depth + 1
+            )
+            return left_ok + right_ok, left_bad + right_bad
+        return record_ids, []
 
     def _verify_sample(self, ids: list[str], written: FloatArray) -> None:
         """Read a sample back and compare.

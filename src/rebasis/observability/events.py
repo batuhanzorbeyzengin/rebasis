@@ -77,6 +77,7 @@ class Events(StrEnum):
     MIGRATE_JOB_STARTED = "migrate.job.started"
     MIGRATE_BATCH_COMPLETED = "migrate.batch.completed"
     MIGRATE_BATCH_THROTTLED = "migrate.batch.throttled"
+    MIGRATE_BATCH_SPLIT = "migrate.batch.split"
     MIGRATE_ITEM_FAILED = "migrate.item.failed"
     MIGRATE_PAUSE_REQUESTED = "migrate.pause.requested"
     MIGRATE_JOB_PAUSED = "migrate.job.paused"
@@ -294,11 +295,17 @@ EVENT_CATALOG: dict[Events, EventSpec] = {
         audited=False,
         description="Batch size halved because memory approached the ceiling.",
     ),
+    Events.MIGRATE_BATCH_SPLIT: EventSpec(
+        _I,
+        ("job_id", "count", "error_code"),
+        audited=False,
+        description="The store rejected a batch; it was halved and each half written separately.",
+    ),
     Events.MIGRATE_ITEM_FAILED: EventSpec(
         _W,
-        ("job_id", "record_id", "error_code"),
+        ("job_id", "record_id", "count", "error_code"),
         audited=False,
-        description="A single record failed.",
+        description="Records the store would not take, after retrying and splitting the batch.",
     ),
     Events.MIGRATE_PAUSE_REQUESTED: EventSpec(
         _I,

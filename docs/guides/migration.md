@@ -506,9 +506,33 @@ Removing a *shadow copy* makes that job permanently irreversible, so it needs
 
 ## When a batch fails
 
-The batch is marked `FAILED`, the job stops, and the failing records keep their
-error code. Everything already written stays written; everything not yet written
-stays queued. Fix the cause, then `rebasis resume <job-id>`.
+**The run does not stop.** The records that could not be written are marked
+`FAILED` with their error code, the ones that could are marked `DONE`, and the
+next batch starts. A run therefore finishes with a count of failures rather than
+at the first one, which is what makes a partial network outage recoverable in one
+`resume` instead of many.
+
+Two things happen before anything is given up on.
+
+**The batch is retried.** `StoreWriteFailed` declares itself transient — a store
+that refused a write because a node was rebalancing will usually take it a moment
+later — so the write is attempted three times with exponential backoff and
+jitter. Every attempt after the first is logged, so a run that took four extra
+seconds says why.
+
+**Then the batch is split.** If it still fails, it is halved and each half is
+written separately, recursively, so the records that were always fine get
+written and only the ones the store actually refuses end up in the failed list.
+A single oversized payload used to cost its two hundred and fifty-five
+neighbours a place in that list. Splitting is bounded at four levels: a store
+that is simply unreachable fails every half, and splitting all the way down would
+cost 511 writes to learn what the first one already said.
+
+The halves are not retried. The batch's own three attempts already established
+that waiting does not help; what is left to find out is *which* record.
+
+Look at what failed, fix the cause, then `rebasis resume <job-id>` — a resume
+returns failed records to the queue.
 
 The one thing that never happens is a partially-written record: the shadow is
 taken first, the write is one call, and the read-back verifies it.
