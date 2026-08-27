@@ -74,4 +74,8 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
   is halfway between two models
 - [Against a published result](vs-drift-adapter.md) — the same three adapters,
   measured against the paper that reports 95–99%
+- [What a completed migration is worth](migration-band.md) — 51 runs, and why
+  it is not distinguishable from bridging
+- [Refitting during a migration](continuous-refit.md) — 216 cells, and the one
+  case where it earns its cost
 - [Related work](related-work.md) — and the door that is closed

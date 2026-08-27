@@ -160,6 +160,10 @@ rebasis fit --store chroma:///path/to/db#notes \
 rebasis migrate --adapter adapters/forward.rbs \
   --store chroma:///path/to/db#notes --priority access --limit 5000
 
+# Stop it at a batch boundary; pick it up where it stopped.
+rebasis pause <job-id>
+rebasis resume <job-id>
+
 # Undo it, from the shadow copy.
 rebasis rollback <job-id>
 ```
