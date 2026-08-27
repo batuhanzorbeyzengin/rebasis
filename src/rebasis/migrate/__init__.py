@@ -28,6 +28,7 @@ from rebasis.migrate.refit import (
     RefitPolicy,
     consider_refit,
 )
+from rebasis.migrate.signals import stop_on_terminate, stop_requested, stop_signal_name
 from rebasis.migrate.spaces import MixedSpace, mixed_spaces, mixed_spaces_for
 from rebasis.migrate.states import ItemState, JobState, can_transition
 
@@ -56,4 +57,7 @@ __all__ = [
     "power_state",
     "request_pause",
     "set_job_state",
+    "stop_on_terminate",
+    "stop_requested",
+    "stop_signal_name",
 ]

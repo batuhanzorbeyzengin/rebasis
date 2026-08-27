@@ -157,7 +157,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     from rebasis.core import load_adapter
     from rebasis.errors import ConfigError
     from rebasis.manifest import ADAPTERS_DIR, SHADOW_DIR, default_state_dir
-    from rebasis.migrate import MigrationEngine, RefitPolicy
+    from rebasis.migrate import MigrationEngine, RefitPolicy, stop_on_terminate
     from rebasis.storage import state_lock
     from rebasis.storage.budget import enforce_budget, estimate_budget
     from rebasis.store.base import require_capability
@@ -285,7 +285,15 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
 
         # X of Y over the queue: the total is known before the first batch, so
         # there is no reason to show a spinner that cannot say how far in it is.
-        with count_progress(limit if limit is not None else queued, "migrating") as counter:
+        #
+        # `stop_on_terminate` is what makes SIGTERM a pause rather than a kill —
+        # this is a command, so taking the signal is this layer's to take. It
+        # wraps only the run: the pre-flight above and the reporting below are
+        # short and interrupting them mid-way buys nothing.
+        with (
+            stop_on_terminate(),
+            count_progress(limit if limit is not None else queued, "migrating") as counter,
+        ):
             result = engine.run(limit=limit, on_batch=counter.advance)
 
         _report_aftermath(

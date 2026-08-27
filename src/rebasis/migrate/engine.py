@@ -26,11 +26,17 @@ one more check on a **fresh connection**, against a reservoir sample kept from
 the whole run. The two checks fail on different things: one catches a store that
 never took the write, the other a store that took it and did not keep it.
 
-The engine never dies where it can pause. Memory pressure and a low battery both
-pause a checkpointed job; resuming is the user's call once the cause is gone. A
-filling disk does not yet: the pre-flight space estimate that should refuse the
-job before it starts is written (`storage/budget.py`) and not wired in, so a full
-disk still surfaces as `InsufficientDiskSpace` from the write that hits it.
+The engine never dies where it can pause. Memory pressure, a low battery and a
+**termination signal** all pause a checkpointed job; resuming is the user's call
+once the cause is gone. A filling disk is refused before the job starts rather
+than paused during it, because a disk that is already too small does not get
+better by waiting — see `storage/budget.py`.
+
+`SIGTERM` is the one worth naming, because it is how a Kubernetes `Job`, an
+Airflow task and an Argo step all end. The CLI installs the handler and
+`migrate/signals.py` explains why it is the CLI's job rather than this module's;
+here it is one more reason in `_reason_to_stop`, indistinguishable from a
+`rebasis pause` arriving from another terminal.
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ from rebasis.migrate.queue import (
     set_job_state,
 )
 from rebasis.migrate.refit import RefitPolicy, consider_refit
+from rebasis.migrate.signals import stop_requested, stop_signal_name
 from rebasis.migrate.states import ItemState, JobState
 from rebasis.observability import (
     Events,
@@ -63,6 +70,7 @@ from rebasis.observability import (
     should_span_batch,
     span,
 )
+from rebasis.observability.semconv import DB_SYSTEM_NAME, REBASIS_MIGRATE_STATE
 from rebasis.storage.shadow import ShadowStore
 from rebasis.types import FloatArray  # noqa: TC001 - runtime annotation in a method signature
 
@@ -280,8 +288,18 @@ class MigrationEngine:
                 knowing what a terminal is. Exceptions raised by it are not
                 caught: a broken display must not abandon a migration midway.
         """
-        with span(Spans.MIGRATE, {"job_id": self.job_id}):
-            return self._run(limit=limit, on_batch=on_batch)
+        with span(Spans.MIGRATE, {"job_id": self.job_id}) as active:
+            result = self._run(limit=limit, on_batch=on_batch)
+            # Set at the end rather than the start, because the state is the
+            # answer rather than the question: a trace filtered to
+            # `rebasis.migrate.state = paused` is the one an operator wants, and
+            # the reason lands next to it. No guard on `active`: with telemetry
+            # off the tracer yields a no-op span that answers `set_attribute`,
+            # which is what keeps this call site unconditional.
+            active.set_attribute(REBASIS_MIGRATE_STATE, str(result.state))
+            if result.pause_reason:
+                active.set_attribute("rebasis.migrate.pause_reason", result.pause_reason)
+            return result
 
     def _run(
         self,
@@ -403,7 +421,16 @@ class MigrationEngine:
         mapped = l2_normalize(self.adapter.apply(originals), copy=False)
 
         try:
-            with span(Spans.STORE_UPSERT, {"count": len(present_ids)}):
+            # `db.system.name` is one of the few OTel names in this area that is
+            # *stable* rather than development-status, so a collector already
+            # knows what to do with it. There is no vector-database convention to
+            # conform to — it is an open, unassigned issue upstream — and this
+            # project does not invent one, so the backend's own declared name is
+            # what goes in the standard field and nothing goes in an invented one.
+            with span(
+                Spans.STORE_UPSERT,
+                {"count": len(present_ids), DB_SYSTEM_NAME: self.store.capabilities.name},
+            ):
                 self.store.upsert_vectors(present_ids, mapped)
         except StoreWriteFailed as exc:
             self.queue.mark(present_ids, ItemState.FAILED, error_code=exc.code)
@@ -799,6 +826,11 @@ class MigrationEngine:
         and the batch it guards spends its time in the store and the embedding
         model — it does not register against that.
         """
+        if stop_requested():
+            # Ahead of the manifest lookup on purpose: a supervisor that has sent
+            # SIGTERM is counting down to SIGKILL, and the cheapest possible
+            # check is the one that should decide.
+            return f"{stop_signal_name() or 'a signal'} asked this process to stop"
         if pause_requested(self.db, self.job_id):
             return "a pause was requested"
         power = power_state(power_aware=self.power_aware)
