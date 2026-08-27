@@ -9,8 +9,14 @@ target measured on one machine; a run at 105% is information, not a defect. What
 cost by an order of magnitude — while leaving room for a slower disk or a busy
 host. Nightly it warns; before a release it blocks.
 
-Wall clock never blocks a PR. These numbers exist as a time series, and
-the PR gate is the instruction-count benchmark instead.
+Wall clock never blocks a PR. These numbers exist as a time series; what gates
+a PR is the `memory` layer, which asserts peak allocation rather than seconds
+and therefore measures the same on a shared runner as on this host. An earlier
+version of this sentence named an instruction-count benchmark as the gate. There
+was none: the CodSpeed job that would have been it collected nothing — `pytest
+--codspeed` gathers only tests using the `benchmark` fixture, and none did — and
+it was removed. A docstring naming a gate that does not exist is worse than one
+naming no gate at all, because it stops anyone from looking.
 
 **Marked `perf` as well as `slow`, and that second marker is what makes the
 sentence above true.** `slow` alone did not: CI runs `-m "not network and not

@@ -166,10 +166,6 @@ dev = [
     "syrupy>=4.6",
     "dirty-equals>=0.7",
     "pytest-benchmark>=4.0",
-    # Instruction-count benchmarking. Wall clock on a shared runner
-    # needs a 7% gate to keep false positives at 1%, which is wide enough to
-    # hide the regressions worth catching; a simulator does not have that
-    # trade-off, so this is what the PR gate is built on.
     "ruff>=0.6",
     "mypy>=1.11",
     "import-linter>=2.0",
@@ -461,7 +457,13 @@ showcontent = true
 testpaths = ["tests"]
 # The default run executes only the fast layer. A developer loop longer than
 # ten seconds means the tests stop being run — that is a deliberate decision.
-addopts = "-m 'not gpu and not slow and not network and not perf' --strict-markers --strict-config"
+#
+# `not memory` is here for that reason and no other. The memory layer is the one
+# thing in tests/performance/ that CI *does* gate on, because peak allocation is
+# deterministic where wall clock is not — but it builds corpora at 400,000
+# records to measure the scaling curve, and that does not belong in a ten-second
+# loop. `just gate` runs it locally; CI runs it on every pull request.
+addopts = "-m 'not gpu and not slow and not network and not perf and not memory' --strict-markers --strict-config"
 # Dump every thread's traceback when a single test runs this long. Nothing here
 # takes two minutes, so it never fires on a healthy run — and when a suite hangs
 # instead of failing, the difference between "CI is stuck" and "this test, in
@@ -474,7 +476,15 @@ markers = [
     "contract: every registered backend must pass (< 3 min)",
     "integration: real store or embedder (< 10 min)",
     "e2e: full CLI flow (< 15 min)",
-    "perf: benchmarks; excluded from the default run",
+    # `perf` and `memory` split what used to be one marker, and the line between
+    # them is what the test *asserts on*. A shared runner cannot measure wall
+    # clock — this suite has the red Xs to prove it — but it measures
+    # `tracemalloc` exactly, so the two cannot share a marker without the
+    # deterministic half being excluded along with the noisy half. That is what
+    # happened: `benchmarks/README.md` claimed the memory ceilings gated every
+    # pull request while the marker kept them off every run CI performed.
+    "perf: asserts wall clock; the merge path cannot measure it",
+    "memory: asserts peak allocation; deterministic, and CI gates on it",
     "gpu: requires an accelerator; server only",
     "slow: golden corpora; server only",
     "network: downloads models or datasets",
@@ -528,8 +538,11 @@ exclude = ["src/rebasis/_version.py"]
 [tool.coverage.report]
 # One overall floor, checked in CI. The per-module targets the design
 # names (core 90, probe 85, errors/redaction/chain/atomic/shadow 100) are not
-# expressible here — coverage.py has one `fail_under` — so they are asserted by
-# `tests/unit/test_coverage_floors.py`, which reads the same coverage data.
+# expressible here — coverage.py has one `fail_under` — so they are checked by
+# `tools/check_coverage_floors.py`, which reads the finished coverage report.
+# A script rather than a test, and that is the point: a test reading
+# `coverage.json` runs inside the session that writes it, so it can only ever
+# see the previous run's numbers.
 fail_under = 75
 exclude_lines = [
     "pragma: no cover",

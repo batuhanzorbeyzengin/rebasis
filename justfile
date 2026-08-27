@@ -27,11 +27,21 @@ fmt:
     uv run ruff format .
 
 test:
-    uv run pytest -m "not gpu and not slow and not network and not perf"
+    uv run pytest -m "not gpu and not slow and not network and not perf and not memory"
 
 test-all:
     uv run pytest -m ""
 
+# Everything CI gates on that the fast loop skips. The memory layer asserts peak
+# allocation, which a shared runner measures exactly — so unlike `bench` it is on
+# the merge path, and this is how to see it go red before pushing rather than
+# after. It builds corpora up to 400,000 records; expect it to take a minute.
+gate:
+    uv run pytest -m memory -q
+
+# Wall-clock benchmarks. These never gate a merge — a shared runner cannot
+# measure timing — so their numbers only mean something on a machine whose
+# specification is recorded next to them.
 bench:
     uv run pytest -m perf -q
 

@@ -11,7 +11,8 @@ Markers, and what each is for:
 | `contract` | Every registered backend runs the same suite | < 3 min |
 | `integration` | A real store or embedder | < 10 min |
 | `e2e` | The full CLI flow | < 15 min |
-| `perf` | Benchmarks and ceilings | excluded by default |
+| `perf` | Asserts wall clock | excluded by default; host only |
+| `memory` | Asserts peak allocation | excluded by default; **CI gates on it** |
 | `gpu` | Needs an accelerator | server only |
 | `slow` | Golden corpora, macro benchmarks | server only |
 | `network` | Downloads models or datasets | opt-in |
@@ -19,6 +20,17 @@ Markers, and what each is for:
 The default `pytest` run executes only the fast layer. That is a decision, not
 an oversight: a developer loop longer than ten seconds is a loop that stops
 being run.
+
+**`perf` and `memory` are split by what a test asserts on, and the split is
+load-bearing.** A shared runner cannot measure wall clock — this suite has the
+red Xs to prove it — but it measures `tracemalloc` exactly. While both wore one
+marker, excluding the noisy half excluded the deterministic half with it: the
+`O(batch × d)` invariant, the only guard against a `list(iter_records())` that
+fails solely on corpora nobody has in development, gated no pull request at all,
+while `benchmarks/README.md` went on saying it gated every one. A test must
+never carry both markers, because `perf` is what keeps it off the merge path.
+
+`just gate` runs the `memory` layer locally; `just bench` runs `perf`.
 
 ## Determinism is enforced
 
@@ -74,8 +86,10 @@ qdrant_client = pytest.importorskip("qdrant_client", reason="qdrant-client is no
 
 ## What a clone cannot run
 
-Two markers, `gpu` and `slow`, never run from a clone, and one more, `perf`, is
-excluded locally by default.
+Two markers, `gpu` and `slow`, never run from a clone. Two more, `perf` and
+`memory`, are excluded from the default local loop — but only `perf` is off the
+merge path. `memory` runs from a clone and gates a pull request; `just gate` is
+how to see it before pushing.
 
 The reason is the hardware, not the permissions. Device parity has nothing to
 compare against on a single-device runner, so a parity suite there is not a
@@ -88,9 +102,9 @@ and is not in a clone — as does the workflow that calls it.
 
 This is stated rather than papered over: **a contributor cannot reproduce those
 numbers, and a pull request is not expected to.** Everything a review gates on —
-`unit`, `property`, `contract`, `integration`, `e2e` — runs from a clone with no
-container and no service to install. If a change needs a GPU number to justify
-it, say so in the pull request and it will be measured on the host.
+`unit`, `property`, `contract`, `integration`, `e2e`, `memory` — runs from a
+clone with no container and no service to install. If a change needs a GPU number
+to justify it, say so in the pull request and it will be measured on the host.
 
 ## What CI runs, and what it no longer does
 

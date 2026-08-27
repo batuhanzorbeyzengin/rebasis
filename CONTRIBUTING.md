@@ -24,9 +24,11 @@ in CI.
    documentation is a code a user will google and not find.
    **Added a log event?** The `Events` entry, the catalogue row and the fields it
    carries, likewise together.
-5. **Touched a hot path or memory behaviour?** Run `just bench` and the memory
-   ceiling tests. **Touched numerics?** Run device parity on CPU and at least one
-   accelerator.
+5. **Touched a hot path or memory behaviour?** Run `just gate` — that is the
+   layer CI blocks on, and running it locally is how you see it go red before
+   pushing rather than after. `just bench` runs the wall-clock layer, which never
+   blocks a merge because a shared runner cannot measure timing.
+   **Touched numerics?** Run device parity on CPU and at least one accelerator.
 6. **Changed adapter or metric behaviour?** Run the golden tests on the GPU host.
 
 The default `pytest` run executes only the fast layer. That is deliberate: a
