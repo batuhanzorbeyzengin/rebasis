@@ -49,10 +49,26 @@ jobs:
         with:
           languages: python
           build-mode: none
-          # `security-and-quality` over the default set. The default is tuned to
-          # keep noise low on a large codebase; this one is 28,000 lines with a
-          # coverage floor, and the extra queries are affordable.
-          queries: security-and-quality
+          # `security-extended`, not `security-and-quality`, and the difference
+          # was decided by running both.
+          #
+          # `security-and-quality` produced fifty findings on this repository and
+          # **not one carried a security severity** — they were the quality half.
+          # That half is already covered, and covered better: `ruff` runs here
+          # with `select = ["ALL"]`, every rule enabled. Worse, CodeQL does not
+          # understand PEP 695 generics, so `def retry_transient[T](...)` was
+          # reported four times as "local variable 'T' may be used before it is
+          # initialized", and it does not model `pytest.raises`, so the statement
+          # after one was reported as unreachable. Two of the fifty were real and
+          # are fixed; the rest were noise a linter that knows the language
+          # version does not produce.
+          #
+          # The risk that matters is not the noise itself. It is that fifty
+          # standing quality alerts are where a real security finding goes to be
+          # missed. `security-extended` is the default security set plus the
+          # lower-precision security queries — more of what CodeQL is uniquely
+          # able to say, and none of what `ruff` already says better.
+          queries: security-extended
       - name: analyse
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:

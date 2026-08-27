@@ -1,0 +1,7 @@
+CodeQL runs the `security-extended` query set rather than `security-and-quality`, and two findings from the first run are fixed.
+
+The first configuration produced fifty findings and **not one carried a security severity** — all fifty were the quality half of the suite. That half is already covered here, and covered better: `ruff` runs with `select = ["ALL"]`, every rule enabled, and it understands the language version. CodeQL does not model PEP 695 generics, so `def retry_transient[T](...)` was reported four times as "local variable 'T' may be used before it is initialized"; it does not model `pytest.raises`, so the statement after one was reported unreachable.
+
+The risk is not the noise. It is that fifty standing quality alerts are where a real security finding goes to be missed. `security-extended` is the default security set plus the lower-precision security queries — more of what CodeQL is uniquely able to say, and none of what a linter already says better.
+
+Two of the fifty were real and are fixed. `report/markdown.py` tested for NaN with `delta != delta`; the idiom is correct and it was also the one line in that file a reader had to decode rather than read, which is precisely how the analyser saw it. It says `math.isnan` now. And a test in `test_audit_chain.py` performed the write it was checking *inside* an `assert`, so under `python -O` the write would vanish and the count that follows would pass for the wrong reason — nothing written because nothing ran.
