@@ -4,6 +4,11 @@
 .env
 .env.local
 .env.*.local
+# Working rules for Claude Code in this repository. Local only: it records the
+# maintainer's own process, the GPU host's habits and what has gone wrong here,
+# none of which belongs in a public clone.
+CLAUDE.md
+
 docs/_local/
 *.pem
 *.ppk
