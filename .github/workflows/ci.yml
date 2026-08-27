@@ -233,3 +233,30 @@ jobs:
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: dependency review
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    # Pull requests only: the action compares a base ref against a head ref, and
+    # there is nothing to compare on a push to `main`.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+      - name: what this change introduces
+        # The gap Dependabot leaves. Dependabot reacts once an advisory exists
+        # for something already merged; this asks whether *this change* adds a
+        # dependency that is already known-vulnerable, before it is merged. Free
+        # on a public repository — GitHub Advanced Security is only required for
+        # private repositories in an organisation.
+        #
+        # `deny-licenses` names the copyleft families that would make this
+        # package unusable inside the commercial products it is meant to sit in.
+        # Apache-2.0 says what rebasis promises; a GPL dependency arriving through
+        # a transitive bump would quietly withdraw that promise, and a legal
+        # review finding it is far more expensive than this job finding it.
+        uses: actions/dependency-review-action@v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0
+          comment-summary-in-pr: on-failure

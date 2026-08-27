@@ -1,0 +1,56 @@
+# Known vulnerabilities in the dependency tree this repository actually resolves.
+#
+# Dependabot already watches for advisories, and it is not enough on its own for
+# two reasons. It is reactive — it opens a pull request once an advisory exists
+# for something already merged — and it works from the manifest rather than from
+# the resolved tree, so a transitive dependency that no direct bump touches can
+# sit unexamined. `pip-audit` asks the other question: given the environment
+# `uv.lock` actually produces, is anything in it known-vulnerable today.
+#
+# Weekly and never on a pull request, for the same reason `citations.yml` is: a
+# new advisory published upstream is not a reason to block a merge that has
+# nothing to do with it, and a `schedule:` trigger applies to every job in the
+# workflow carrying it. The pull-request half of this is the dependency review
+# job in `ci.yml`, which is scoped to what a change introduces.
+#
+# A scheduled run only happens on the default branch, and GitHub mails the
+# repository owner when one fails there — which is what makes a weekly failure
+# visible without anyone watching for it.
+
+name: Audit
+
+on:
+  schedule:
+    - cron: "23 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: nothing resolved is known-vulnerable
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: audit
+      - name: the tree the lock produces, with every extra
+        # `--all-extras`: a vulnerability in the chroma or torch half is a
+        # vulnerability a user who installed that half has, and auditing only the
+        # core would report a tree almost nobody runs.
+        run: |
+          uv export --all-extras --no-emit-project --format requirements.txt \
+            --no-hashes -o /tmp/resolved.txt
+          wc -l < /tmp/resolved.txt
+      - name: audit it
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: /tmp/resolved.txt

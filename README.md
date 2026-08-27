@@ -23,6 +23,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python"></a>
   <a href="#status-01"><img src="https://img.shields.io/badge/version-0.1-orange" alt="Version"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/batuhanzorbeyzengin/rebasis"><img src="https://api.scorecard.dev/projects/github.com/batuhanzorbeyzengin/rebasis/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 A better embedding model comes out. Your vault, codebase or agent memory is

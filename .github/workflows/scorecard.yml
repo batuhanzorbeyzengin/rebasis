@@ -1,0 +1,72 @@
+# OpenSSF Scorecard — the security posture of this repository, scored by a tool
+# rather than described by its maintainer.
+#
+# Scorecard runs eighteen checks and publishes a score an evaluator can read
+# without reading the repository. That is the point of having it: a
+# security-conscious team assessing whether to depend on rebasis gets a number
+# from a third party instead of a paragraph from the person who wrote the code.
+#
+# Two of the checks this repository cannot pass, and pretending otherwise would
+# be worse than the low score. **Code-Review** counts pull requests reviewed by
+# somebody other than their author; there is one maintainer, so it is low by
+# construction. **Branch-Protection** reads settings this workflow cannot set,
+# and the release workflow pushes the changelog commit and the tag to `main`, so
+# a protection rule has to be written to allow that or a release cannot happen.
+# Both are stated in SECURITY.md rather than worked around.
+#
+# `publish_results: true` is what makes the badge and the public API entry work.
+# It publishes the score, not the code — the analysis runs entirely on this
+# runner. Structure follows the upstream example at
+# github.com/ossf/scorecard/blob/main/.github/workflows/scorecard-analysis.yml.
+
+name: Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly. A score does not move between pushes, and `schedule` only fires on
+    # the default branch — which is also where GitHub mails the owner on failure.
+    - cron: "41 5 * * 2"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: score this repository
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      # `security-events` uploads the SARIF to the Security tab, free on a public
+      # repository. `id-token` is what lets Scorecard publish the result, and is
+      # the only reason the badge can be served.
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Scorecard reads the repository through the API, not through a
+          # credentialed clone. Withholding the credential is one of the things
+          # its own Dangerous-Workflow check looks for.
+          persist-credentials: false
+      - name: run the checks
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: keep the SARIF where a failure can be read
+        uses: actions/upload-artifact@v7
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+      - name: upload to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif

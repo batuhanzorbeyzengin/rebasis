@@ -18,6 +18,53 @@ Include what you were doing, what happened, and the version. **Do not include
 corpus content or vectors** — a description is enough, and the same reasoning
 that keeps them out of logs applies to reports.
 
+### What to expect, and what is not promised
+
+There is one maintainer. What follows is an intention, stated so that silence
+can be read correctly; it is not a service-level agreement and nothing here is
+contractual.
+
+| | |
+|---|---|
+| Acknowledgement | Within **3 working days**. If you have not heard back in a week, the report did not arrive — open a public issue saying only that you are waiting on a security response, with no details. |
+| Assessment | Within **10 working days**: whether it is a vulnerability, and how severe. |
+| Fix | No date is promised. Severity and how much of a user's data is at risk decide the order. |
+| Disclosure | Coordinated. An advisory is published when a fix is released, and it credits you unless you ask otherwise. |
+
+GitHub is a CVE Numbering Authority, so an accepted report can be issued a
+**CVE** through the same advisory, and GitHub publishes it to the **GitHub
+Advisory Database** and from there to **OSV**. That is what makes it reachable by
+`pip-audit`, `osv-scanner` and Dependabot, rather than only by someone reading
+this repository.
+
+### Verifying what you installed
+
+Releases are published from GitHub Actions with PyPI Trusted Publishing, so no
+long-lived API token exists that could be stolen and used to publish in this
+project's name. Since `pypa/gh-action-pypi-publish` v1.11.0 each published file
+also carries a **PEP 740 attestation** binding it to the workflow that built it;
+PyPI shows it on the file listing.
+
+Every release also attaches a **CycloneDX SBOM** covering the tree `uv.lock`
+resolves with all extras installed. It is on the GitHub release, not on PyPI,
+which accepts distributions only.
+
+### What is scanned, and how often
+
+| | |
+|---|---|
+| Every pull request | `gitleaks` for secrets, and `actions/dependency-review-action` for dependencies the change introduces — failing on a high-severity advisory or a copyleft licence |
+| Weekly | `pip-audit` over the resolved tree with every extra, and an OpenSSF Scorecard run |
+| Continuously | Dependabot, grouped by blast radius |
+
+**Two Scorecard checks this project cannot pass, stated rather than worked
+around.** *Code-Review* counts pull requests reviewed by somebody other than
+their author; there is one maintainer, so it is low by construction. *Branch
+Protection* is not enabled on `main`, because the release workflow pushes the
+changelog commit and the tag there — a protection rule has to be written to
+allow that before it can be turned on. Neither is a score that improves by
+configuring something; both improve only by the project having more people.
+
 ## What rebasis guarantees
 
 - **No outbound telemetry.** rebasis sends no data anywhere. There is no
@@ -51,3 +98,33 @@ local attacker. Claiming otherwise would be false.
 ## Supported versions
 
 While the project is 0.x, only the latest release receives fixes.
+
+## Regulatory scope
+
+Written down because a compliance reviewer would otherwise have to work it out,
+and because the answers are short. **None of this is legal advice.**
+
+**EU Cyber Resilience Act (Regulation (EU) 2024/2847).** rebasis appears to fall
+outside it. The European Commission's own guidance states the CRA "does not apply
+to developers who contribute with source code to free and open-source software
+that are not under their responsibility", and that providing FOSS which its
+maintainers do not monetise is not a commercial activity. The lighter
+"open-source software steward" regime under Article 24 applies to a *legal
+person* — a foundation or a company — and not to an individual. rebasis is
+maintained by one person and is not monetised, so it is neither a manufacturer
+nor a steward. If that changes — a company shipping it commercially, or a
+foundation taking it on — the analysis changes with it and deserves an actual
+legal read.
+
+**Frameworks that certify organisations, not software.** SOC 2 examines a service
+organisation's controls over a period; ISO/IEC 27001 and ISO/IEC 42001 certify an
+organisation's management system; the EU AI Act places obligations on providers
+and deployers of AI systems. rebasis is a library you run on your own machine
+against your own index. It has no service for an auditor to observe, and claiming
+any of those certifications *for the tool* would be a category error.
+
+What it does offer a compliance programme is evidence. The audit trail records
+who ran what, when, with which parameters — hash-chained, replayable, and
+carrying no document content or vectors by construction. That is something a
+deploying organisation can feed into its own SOC 2 or ISO 27001 controls. The
+certification belongs to the organisation deploying it, not to the tool.
