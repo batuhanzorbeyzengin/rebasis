@@ -42,7 +42,7 @@ log = get_logger(__name__)
 
 #: Current manifest schema. Forward-only migrations, tracked in
 #: ``PRAGMA user_version``.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _PRAGMAS = (
     # Persistent: set once and stored in the file header.
@@ -276,5 +276,18 @@ _MIGRATIONS: dict[int, str] = {
     -- with the job means the user does not have to remember it months later,
     -- which is exactly when a rollback is wanted.
     ALTER TABLE jobs ADD COLUMN store_uri TEXT NOT NULL DEFAULT '';
+    """,
+    3: """
+    -- `rebasis pause` asks a running job to stop; the engine reads this at the
+    -- top of every batch and finishes the one it is in.
+    --
+    -- A column rather than a `JobState`, and the distinction is the whole
+    -- design. A state says where the job *is*, and until the engine has
+    -- actually stopped the job is still RUNNING — writing PAUSED from another
+    -- process would claim a stop that has not happened, and the two writers
+    -- would then race over the same column. This is a request: one process
+    -- writes it, one process reads it, and only the engine ever says what state
+    -- the job is in.
+    ALTER TABLE jobs ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0;
     """,
 }

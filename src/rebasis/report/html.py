@@ -183,6 +183,13 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
                 f'<td class="num">{result.baselines["unadapted"]:.3f}</td>'
                 "<td>Feed new vectors straight into the old index</td></tr>"
             )
+        if "reachable_ceiling" in result.baselines:
+            parts.append(
+                f"<tr><td><em>Ceiling &mdash; nothing reaches this</em></td>"
+                f'<td class="num"><em>{result.baselines["reachable_ceiling"]:.3f}</em></td>'
+                "<td><em>The best any query-side map could do in this index</em>"
+                "</td></tr>"
+            )
         parts.append("</table></div>")
 
     parts.extend(["<h3>Every adapter that was tried</h3>", '<div class="wrap"><table>'])
@@ -226,6 +233,16 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
 
 def _how_to_read_html(result: ProbeResult) -> str:
     blocks = [_BANDS_HTML, _INTERVAL_HTML]
+    if result.access_weighted:
+        blocks.append(
+            "<p><strong>Queries were drawn weighted by an access log.</strong> "
+            "Every number here describes retention on the questions people "
+            "actually send, not on a uniform draw over the corpus. Those are "
+            "different quantities and this one is usually the higher of the two, "
+            "because a frequently-read document is one the index already handles "
+            "well. Compare it against another weighted run, not against an "
+            "unweighted one.</p>"
+        )
     if result.ground_truth_tier == "t0":
         blocks.append(
             "<p><strong>This run used document proxies, not real queries.</strong> "

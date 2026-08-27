@@ -44,8 +44,8 @@ jobs:
       - run: uv sync --all-extras
       - name: gates
         run: |
-          uv run ruff check src tests spikes examples
-          uv run ruff format --check src tests spikes examples
+          uv run ruff check src tests spikes examples tools
+          uv run ruff format --check src tests spikes examples tools
           uv run mypy src
           uv run lint-imports
       - name: the full suite, except what needs the GPU host

@@ -158,6 +158,70 @@ def test_a_document_in_both_sides_is_not_counted_twice(adapter_path: Path) -> No
 
 
 @pytest.mark.unit
+def test_one_side_alone_comes_back_in_the_order_it_arrived(adapter_path: Path) -> None:
+    """At 0% and 100% migrated the index holds one space and there is one right
+    answer — what the store returned. A merge that cannot reproduce it is wrong
+    at the endpoints rather than merely worse there.
+
+    It could not. The isotonic calibrator is a step function: ten distinct
+    bridged scores land on five to seven distinct calibrated values, and the sort
+    then broke every one of those ties on the document id. Measured over four
+    corpora, the single-space ranking survived on 4% to 16% of queries.
+    """
+    bridge = Bridge.load(adapter_path)
+    # Ids deliberately anti-sorted against rank: if the id is doing the ordering
+    # this comes back reversed, and if the rank is, it comes back unchanged.
+    hits = [Hit(id=f"doc-{9 - i}", score=0.9 - 0.001 * i, rank=i) for i in range(10)]
+
+    merged = calibrated_merge(hits, [], k=10, calibrator=bridge._calibrator)
+
+    assert [h.id for h in merged] == [h.id for h in hits]
+
+
+@pytest.mark.unit
+def test_the_new_side_alone_is_unchanged_too(adapter_path: Path) -> None:
+    """The same property from the other end, where no calibration happens at
+    all — so a failure here would be the merge itself rather than the step
+    function feeding it."""
+    bridge = Bridge.load(adapter_path)
+    hits = [Hit(id=f"doc-{9 - i}", score=0.9 - 0.001 * i, rank=i) for i in range(10)]
+
+    merged = calibrated_merge([], hits, k=10, calibrator=bridge._calibrator)
+
+    assert [h.id for h in merged] == [h.id for h in hits]
+
+
+@pytest.mark.unit
+def test_a_cross_side_tie_is_still_broken_on_the_id(adapter_path: Path) -> None:
+    """The property the id tie-break was there for, and which the fix keeps.
+
+    Two hits from different sides can hold the same merged score *and* the same
+    rank — one is rank 0 on the old side, the other rank 0 on the new. Resolving
+    that by which side was passed first would be a standing bias toward one
+    embedding space, which is what the merge exists to avoid, so the id decides.
+
+    The two sides are not symmetric — only the old one goes through the
+    calibrator — so the tie has to be constructed rather than assumed: the new
+    hit is given exactly the score the calibrator produces for the old one.
+    """
+    import numpy as np
+
+    bridge = Bridge.load(adapter_path)
+    raw = 0.5
+    calibrated = float(bridge._calibrator.transform(np.array([raw], dtype=np.float32))[0])
+
+    merged = calibrated_merge(
+        [Hit(id="b", score=raw, rank=0)],
+        [Hit(id="a", score=calibrated, rank=0)],
+        k=2,
+        calibrator=bridge._calibrator,
+    )
+
+    assert [h.score for h in merged] == pytest.approx([calibrated, calibrated])
+    assert [h.id for h in merged] == ["a", "b"]
+
+
+@pytest.mark.unit
 def test_wrap_retriever_routes_embeddings_and_forwards_the_rest(
     adapter_path: Path, rng: np.random.Generator
 ) -> None:

@@ -1,0 +1,51 @@
+# Does arXiv still say what this repository says it says?
+#
+# The other half of this check — that `docs/citations.toml` and the committed
+# documentation name the same set of papers — is a step in `ci.yml`'s lint job.
+# That half touches no network, so it cannot go red because arXiv is down, which
+# is the only reason a citation check belongs on the merge path at all.
+#
+# This half asks arXiv whether the recorded titles and authors are the ones those
+# identifiers actually carry, and it lives here rather than in `ci.yml` for one
+# reason: a `schedule:` trigger applies to every job in the workflow that carries
+# it. Adding one to `ci.yml` would have run all six pull-request jobs once a week
+# for nothing.
+#
+# Weekly, never on a pull request. A title that has not changed in three years
+# does not need re-reading on every push, and arXiv being unreachable is not a
+# reason to block a merge. A scheduled run only happens on the default branch and
+# GitHub mails the repository owner when one fails there, which is what makes a
+# weekly failure visible without anyone watching for it.
+
+name: Citations
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: citations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  citations:
+    name: arXiv still says what we say it says
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      # No `fetch-depth: 0`: nothing here derives a version from tags, and the
+      # file list comes from `git ls-files`, which reads the index — a shallow
+      # checkout has that in full.
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        # No cache to key: this job installs nothing.
+      - name: every recorded title is the title arXiv carries
+        # `--no-project`, and it is not a shortcut: the check is stdlib only, so
+        # it runs whether or not the project's environment can be built. A paper
+        # title is not worth a dependency. `--python 3.12` pins the interpreter
+        # that would otherwise be whatever the runner image happens to ship.
+        run: uv run --no-project --python 3.12 python tools/check_citations.py --online

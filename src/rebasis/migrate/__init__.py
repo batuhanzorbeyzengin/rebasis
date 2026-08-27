@@ -14,7 +14,14 @@ from __future__ import annotations
 from rebasis.migrate.engine import MigrationEngine, MigrationResult
 from rebasis.migrate.health import HealthComparison, IndexHealth, measure_index_health
 from rebasis.migrate.power import PowerState, ResourceMonitor, power_state
-from rebasis.migrate.queue import JobQueue, QueueStats, set_job_state
+from rebasis.migrate.queue import (
+    JobQueue,
+    QueueStats,
+    clear_pause_request,
+    pause_requested,
+    request_pause,
+    set_job_state,
+)
 from rebasis.migrate.refit import (
     MIN_IMPROVEMENT,
     RefitDecision,
@@ -40,10 +47,13 @@ __all__ = [
     "RefitPolicy",
     "ResourceMonitor",
     "can_transition",
+    "clear_pause_request",
     "consider_refit",
     "measure_index_health",
     "mixed_spaces",
     "mixed_spaces_for",
+    "pause_requested",
     "power_state",
+    "request_pause",
     "set_job_state",
 ]

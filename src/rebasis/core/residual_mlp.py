@@ -125,12 +125,23 @@ class ResidualMLPAdapter(BaseAdapter):
             linear.weight.copy_(torch.from_numpy(base.weight.T).to(dev))
             linear.bias.copy_(torch.from_numpy(base.bias).to(dev))
 
-        mlp = nn.Sequential(nn.Linear(d_in, hidden), nn.GELU(), nn.Linear(hidden, d_out)).to(dev)
+        # The two Linear layers are named rather than reached through `mlp[0]`
+        # and `mlp[2]`. Indexing an `nn.Sequential` returns a bare `Module`, and
+        # `Module.__getattr__` is typed as `Tensor | Module`, so every `.weight`
+        # read through an index is untyped from there down — `mypy --strict` on
+        # a checkout that has torch installed reports six errors on the indexed
+        # form. CI's lint job runs `uv sync --no-group spike`, which leaves torch
+        # out, so mypy silently treats the whole module as `Any` and sees none of
+        # them; the failure only appears on a machine that has torch. Naming the
+        # layers keeps them `nn.Linear` throughout and drops the magic indices.
+        hidden_layer = nn.Linear(d_in, hidden)
+        output_layer = nn.Linear(hidden, d_out)
+        mlp = nn.Sequential(hidden_layer, nn.GELU(), output_layer).to(dev)
         with torch.no_grad():
             # Zeroing the last layer makes g(x) start out exactly equal to the
             # linear solution, so training begins from a known-good point.
-            mlp[-1].weight.zero_()
-            mlp[-1].bias.zero_()
+            output_layer.weight.zero_()
+            output_layer.bias.zero_()
 
         optimiser = torch.optim.Adam(
             list(linear.parameters()) + list(mlp.parameters()), lr=learning_rate
@@ -161,10 +172,10 @@ class ResidualMLPAdapter(BaseAdapter):
                 best = {
                     "W": linear.weight.detach().cpu().numpy().T.copy(),
                     "b": linear.bias.detach().cpu().numpy().copy(),
-                    "W1": mlp[0].weight.detach().cpu().numpy().T.copy(),
-                    "b1": mlp[0].bias.detach().cpu().numpy().copy(),
-                    "W2": mlp[2].weight.detach().cpu().numpy().T.copy(),
-                    "b2": mlp[2].bias.detach().cpu().numpy().copy(),
+                    "W1": hidden_layer.weight.detach().cpu().numpy().T.copy(),
+                    "b1": hidden_layer.bias.detach().cpu().numpy().copy(),
+                    "W2": output_layer.weight.detach().cpu().numpy().T.copy(),
+                    "b2": output_layer.bias.detach().cpu().numpy().copy(),
                 }
                 stale = 0
             else:

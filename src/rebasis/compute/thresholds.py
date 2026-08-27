@@ -13,14 +13,22 @@ speedups behind each, so a caller can decide without re-deriving it.
 
 The one honest caveat is that these are ratios between *this* GPU and *that*
 CPU. A faster host narrows every one of them, which is why a local calibration
-can override the table — ``doctor`` measures the machine in front of it and
-writes the result down, and :func:`load_calibration` reads it back.
+can override the table — ``rebasis doctor --calibrate`` measures the machine in
+front of it and writes the result down, and :func:`load_calibration` reads it
+back.
+
+**What that calibration is, and is not.** It is a diagnostic. Nothing in the
+runtime dispatches per operation: `probe` and `fit` run under one ambient device
+for the whole session and :func:`~rebasis.compute.search.top_k_search` uses it
+without consulting a size threshold. So a calibration changes what ``doctor``
+reports about this machine; it does not change where work runs. Saying otherwise
+would be the more flattering claim and the false one.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
@@ -55,16 +63,23 @@ WORTH_IT = 2.0
 class Calibration:
     """Speedups measured on *this* machine.
 
-    Written by a local calibration step that does not exist yet: `doctor` takes
-    no options, so nothing produces one of these. The shape is here so that the
-    thresholds below can be overridden by measurement rather than by argument
-    when it does.
+    Written by ``rebasis doctor --calibrate``, which times the operations it can
+    reach without downloading anything and records **only those**. A key that is
+    absent was not measured, and :func:`worth_accelerating` falls back to
+    :data:`MEASURED_SPEEDUPS` for it rather than reading the absence as a zero.
+    That is the same rule the rest of the project applies to energy and to the
+    reindex estimate: measured or omitted, never estimated.
+
+    ``notes`` records what each measurement was taken on — sizes, repeats, the
+    dimensionality — because a ratio without its configuration is not
+    reproducible and this file outlives the terminal it was printed in.
     """
 
     device: str
     speedups: dict[str, float]
     measured_utc: str = ""
     host: str = ""
+    notes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialisable form."""
@@ -73,17 +88,28 @@ class Calibration:
             "speedups": self.speedups,
             "measured_utc": self.measured_utc,
             "host": self.host,
+            "notes": self.notes,
         }
 
 
 def worth_accelerating(operation: str, calibration: Calibration | None = None) -> bool:
     """Whether ``operation`` is worth moving off the CPU.
 
-    Uses a local calibration when one exists, falling back to the M0
-    measurements. Unknown operations return ``False``: the burden is on an
-    operation to show it benefits, not on the CPU to defend itself.
+    Uses a local calibration where it has an entry, falling back to the M0
+    measurements where it does not. **Per key, not per table**, and the
+    distinction is the whole safety of a partial calibration: `doctor
+    --calibrate` measures what it can reach without downloading a model, which
+    is not every key here, and replacing the whole table with a partial one
+    would read a missing ``embed`` as *not worth accelerating* — turning off the
+    one operation that dominates a `probe`, on a machine that had just been
+    measured and found fast.
+
+    Unknown operations return ``False``: the burden is on an operation to show
+    it benefits, not on the CPU to defend itself.
     """
-    table = calibration.speedups if calibration is not None else MEASURED_SPEEDUPS
+    table = (
+        MEASURED_SPEEDUPS if calibration is None else {**MEASURED_SPEEDUPS, **calibration.speedups}
+    )
     return table.get(operation, 0.0) >= WORTH_IT
 
 
@@ -108,6 +134,7 @@ def load_calibration(state_dir: Path | str) -> Calibration | None:
             speedups={str(k): float(v) for k, v in payload["speedups"].items()},
             measured_utc=str(payload.get("measured_utc", "")),
             host=str(payload.get("host", "")),
+            notes=dict(payload.get("notes", {})),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

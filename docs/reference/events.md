@@ -40,6 +40,7 @@ and reformatted; an audit record may not.
 | `migrate.job.paused` | WARNING | **yes** | `job_id`, `state`, `error_code` | Migration paused; resumable. |
 | `migrate.job.resumed` | INFO | **yes** | `job_id`, `state` | Migration resumed. |
 | `migrate.job.started` | INFO | **yes** | `job_id`, `count`, `adapter_type`, `state` | Migration job started. |
+| `migrate.pause.requested` | INFO | **yes** | `job_id`, `state` | Someone asked a running job to stop after its current batch. |
 | `observability.redaction.triggered` | WARNING | no | `field_count` | A field outside the allowlist reached the renderer and was redacted. In production code paths this counter must stay at zero — a non-zero value is a bug signal, not a safety net working as intended. |
 | `probe.decision.made` | INFO | **yes** | `decision`, `arr_r10`, `borderline`, `count`, `seed`, `device` | The tool's actual output. Audited because this decision must remain defensible six months later. |
 | `probe.geometry.measured` | INFO | no | `count`, `dim`, `geometry_delta`, `alignment_bound` | How closely the two models' pairwise similarities agree, and the bound on orthogonal alignment error that implies (Maystre et al., arXiv:2510.13406). Computed before any adapter is fitted. A bound, not a prediction: it says an alignment exists, not that retrieval will use it. |

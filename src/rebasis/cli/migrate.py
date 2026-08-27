@@ -1,7 +1,13 @@
-"""``rebasis migrate``, ``status``, ``rollback`` and ``gc``.
+"""``rebasis migrate``, ``pause``, ``resume``, ``status``, ``rollback`` and ``gc``.
 
-These are the commands that write. Every one of them takes the state lock, shows
-what it will do before doing it, and records what it did.
+These are the commands that write. Every one that touches the index takes the
+state lock, shows what it will do before doing it, and records what it did.
+
+``status`` and ``pause`` deliberately take no lock, because a running migration
+holds it for its whole run and both of them exist to be used *while* one is
+running. ``status`` only reads. ``pause`` writes one column — ``pause_requested``
+— that nothing else writes, so there is no second writer to serialise against;
+what state a job is in remains the engine's word alone.
 """
 
 from __future__ import annotations
@@ -22,8 +28,16 @@ if TYPE_CHECKING:
     from rebasis.manifest import JobRow
     from rebasis.migrate.engine import MigrationEngine, MigrationResult
     from rebasis.store.base import VectorStore
+    from rebasis.types import Embedder, EncodingProfile
 
-__all__ = ["gc_command", "migrate_command", "rollback_command", "status_command"]
+__all__ = [
+    "gc_command",
+    "migrate_command",
+    "pause_command",
+    "resume_command",
+    "rollback_command",
+    "status_command",
+]
 
 #: Ids are streamed into the queue in chunks this size. Large enough that the
 #: transaction overhead disappears, small enough that a huge corpus never has
@@ -66,6 +80,16 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             help="Keep a shadow copy so the migration can be rolled back",
         ),
     ] = True,
+    shadow_precision: Annotated[
+        str,
+        typer.Option(
+            "--shadow-precision",
+            help=(
+                "float32 for a bit-identical rollback, float16 for half the disk "
+                "and a rollback that is measurably close rather than exact"
+            ),
+        ),
+    ] = "float32",
     max_memory: Annotated[
         str | None, typer.Option("--max-memory", help="Ceiling, e.g. 2GB")
     ] = None,
@@ -92,6 +116,25 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             ),
         ),
     ] = False,
+    refit: Annotated[
+        bool,
+        typer.Option(
+            "--refit",
+            help=(
+                "Periodically refit the adapter on records not yet migrated, "
+                "adopting the result only if it wins. Re-embeds documents"
+            ),
+        ),
+    ] = False,
+    refit_every: Annotated[
+        int, typer.Option("--refit-every", help="Records between refit attempts")
+    ] = 50_000,
+    refit_pairs: Annotated[
+        int, typer.Option("--refit-pairs", help="Records sampled and re-embedded per attempt")
+    ] = 1000,
+    device: Annotated[
+        str, typer.Option("--device", help="Where to run the embedder --refit needs")
+    ] = "auto",
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", "-n", help="Show the plan and stop, writing nothing"),
@@ -110,11 +153,11 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
     index nobody could rebuild. Take a backup you can restore without rebasis,
     and try `--limit` on a slice first.
     """
-    from rebasis.cli._pipeline import audit_writer_for, open_target_store
+    from rebasis.cli._pipeline import audit_writer_for, open_target_store, read_access_log
     from rebasis.core import load_adapter
     from rebasis.errors import ConfigError
     from rebasis.manifest import ADAPTERS_DIR, SHADOW_DIR, default_state_dir
-    from rebasis.migrate import MigrationEngine
+    from rebasis.migrate import MigrationEngine, RefitPolicy
     from rebasis.storage import state_lock
     from rebasis.storage.budget import enforce_budget, estimate_budget
     from rebasis.store.base import require_capability
@@ -139,13 +182,18 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             hint="`rebasis migrate --adapter a.rbs --store chroma:///db#docs`",
         )
 
+    _check_precision(shadow_precision)
     loaded, manifest, _ = load_adapter(adapter)
+    # Before the store is even opened: this one needs nothing but the manifest,
+    # and the cheapest refusal is the one that happens first.
+    _check_direction(manifest, adapter)
     opened = open_target_store(store)
     require_capability(opened, "can_upsert_vectors", operation="migrate")
     _check_dimensions(opened, loaded)
     # The lock is what keeps two of these out of one manifest.
     with state_lock(directory, operation="migrate"):
         writer = audit_writer_for(directory)
+        embedder, profiles = _refit_collaborators(manifest, opened, enabled=refit, device=device)
         engine = MigrationEngine(
             db=writer.db,
             store=opened,
@@ -159,6 +207,15 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             audit=writer,
             store_uri=store,
             adapter_path=str(adapter),
+            shadow_precision=shadow_precision,
+            refit=RefitPolicy(
+                enabled=refit,
+                every_n_records=refit_every,
+                sample_size=refit_pairs,
+            ),
+            embedder=embedder,
+            adapter_root=directory / ADAPTERS_DIR,
+            profiles=profiles,
         )
 
         if not keep_original:
@@ -170,7 +227,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             )
 
         if resume is None:
-            priorities = _read_access_log(access_log) if priority == "access" else None
+            priorities = read_access_log(access_log) if priority == "access" else None
             if priority == "access" and priorities is None:
                 raise ConfigError(
                     "`--priority access` needs an access log.",
@@ -203,10 +260,12 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
             dim=loaded.output_dim,
             state_dir=directory,
             keep_original=keep_original,
+            shadow_precision=shadow_precision,
         )
         console.print()
         console.print(budget.render())
         _note_background_reindex(opened)
+        _note_quantized_store(opened, dry_run=dry_run)
         console.print()
         enforce_budget(budget, directory)
 
@@ -259,6 +318,10 @@ def _emit_jobs(
         {
             "job_id": job.job_id,
             "state": job.state,
+            # Separate from `state` rather than folded into it: a script that
+            # branches on "running" must keep working, and this is a second fact
+            # about a running job rather than a different state.
+            "pause_requested": job.pause_requested,
             "adapter_type": job.adapter_type,
             "adapter_path": job.adapter_path,
             "store_uri": job.store_uri,
@@ -369,6 +432,64 @@ def _note_background_reindex(store: VectorStore) -> None:
         "is not in the estimate above, and some of it continues after the run "
         "finishes.[/dim]"
     )
+
+
+def _note_quantized_store(store: VectorStore, *, dry_run: bool) -> None:
+    """Say what rollback is worth here, on a store that does not keep what it is given.
+
+    It does not refuse, and it is not asking a question. A quantized index is a
+    deliberate engineering choice and its owner has as much right to migrate it
+    as anyone; what they do not have without this is a correct reading of the
+    sentence `rollback` is sold on. So the plan states the difference and the
+    run continues.
+
+    **What changes.** rebasis shadows what the store *returns*, and a store that
+    quantizes returns a value decoded from its stored code rather than the value
+    that was written to it. The shadow is still bit-identical — to that decoded
+    view. `rollback` therefore restores the vectors this collection reads back
+    today, which is the state the migration replaced; it does not recover
+    precision the collection had already spent before rebasis was involved.
+
+    Three states, and the third is handled differently on purpose.
+    ``False`` says nothing, because there is nothing to say. ``True`` says it
+    every time. ``None`` — the store could not be asked — is not a finding, and
+    a caveat printed on every unknown is a caveat nobody reads; it appears only
+    under `--dry-run`, which is where the user has explicitly asked for
+    everything the plan knows.
+    """
+    quantized = store.capabilities.quantized
+    if quantized is None:
+        if dry_run:
+            console.print(
+                "  [dim]Whether this backend stores its vectors quantized could not be "
+                "determined, so the rollback guarantee above is the one for a store "
+                "that keeps what it is given.[/dim]"
+            )
+        return
+    if not quantized:
+        return
+
+    console.print(
+        "  [yellow]This collection stores its vectors quantized.[/yellow] [dim]rebasis "
+        "reads the store's decoded view of them, and that view is what the shadow "
+        "copy holds — so `rollback` restores what this collection reads back today, "
+        "not what your embedding model produced. That gap was there before rebasis "
+        "ran.[/dim]"
+    )
+    if dry_run:
+        # The tolerance is interpolated, never spelled out. It is a constant in
+        # the engine, and a second copy of it here is the copy nobody updates —
+        # the message would go on quoting a number the check no longer uses.
+        from rebasis.migrate.engine import VERIFY_ATOL
+
+        console.print(
+            "  [dim]The same applies going the other way: each migrated vector is "
+            "re-encoded on write, so what the index ends up holding is an "
+            "approximation of what the adapter produced. `migrate` re-reads a sample "
+            "of every batch and compares it to what it sent, to a tolerance of "
+            f"{VERIFY_ATOL:.0e} — a store whose codec is coarser than that will fail "
+            "the check and stop the job, with the shadow copy already written.[/dim]"
+        )
 
 
 def _report_aftermath(  # noqa: PLR0913 - one argument per thing the run left behind
@@ -536,6 +657,169 @@ def _resume_defaults(
     return recovered_adapter, recovered_store
 
 
+#: What ``--shadow-precision`` accepts. ``ShadowStore`` treats anything that is
+#: not ``float16`` as ``float32``, which is the right default for a library and
+#: the wrong one for a flag: a typo would silently produce the safe behaviour
+#: while the user believed they had asked for the other.
+SHADOW_PRECISIONS = ("float32", "float16")
+
+
+def _note_shadow_precision(shadow_root: Path, job_id: str) -> None:
+    """Say what a rollback from this shadow is worth, before it happens.
+
+    ``float32`` restores the bytes that were read. ``float16`` halves the disk
+    and restores something measurably close: over 68 corpus/model runs the
+    top-10 set survived on 99.8% of queries and nDCG@10 moved by at most 0.0017
+    (`docs/shadow-precision.md`). Neither is a surprise worth springing at the
+    confirmation prompt, so both are printed.
+
+    Silent when the shadow cannot be read. This is a note beside a confirmation,
+    and `MigrationEngine.rollback` raises properly a moment later if the shadow
+    is really missing — reporting it twice, the first time as a formatting
+    problem, would be worse than reporting it once where it belongs.
+    """
+    from rebasis.storage.shadow import ShadowStore
+
+    try:
+        precision = ShadowStore(shadow_root, job_id).manifest().precision
+    except Exception:  # noqa: BLE001 - a note must not pre-empt the real error
+        return
+    if precision == "float16":
+        console.print(
+            "  [yellow]precision float16 — close, not bit-identical[/yellow] "
+            "(measured: nDCG@10 within 0.002)"
+        )
+    else:
+        console.print(f"  precision {precision}, so the restore is bit-identical")
+
+
+def _check_precision(precision: str) -> None:
+    """Refuse a precision that is not one of the two.
+
+    Raises:
+        ConfigError: For anything else.
+    """
+    if precision in SHADOW_PRECISIONS:
+        return
+    from rebasis.errors import ConfigError
+
+    raise ConfigError(
+        f"--shadow-precision takes {' or '.join(SHADOW_PRECISIONS)}, not {precision!r}.",
+        hint="float32 keeps the rollback bit-identical; float16 halves the disk.",
+        context={"precision": precision},
+    )
+
+
+def _refit_collaborators(
+    manifest: AdapterManifest,
+    store: VectorStore,
+    *,
+    enabled: bool,
+    device: str,
+) -> tuple[Embedder | None, tuple[EncodingProfile, EncodingProfile] | None]:
+    """The embedder and profiles ``--refit`` needs, or ``(None, None)``.
+
+    `migrate` normally opens no model at all — it applies a matrix to vectors it
+    reads. A refit has to produce *real* target vectors, because a migrated
+    record carries the adapter's own image rather than the new model's output,
+    so it needs the new model. Which model that is comes off the adapter's
+    manifest rather than off a flag: the adapter records what it was fitted
+    against, and asking the user to retype it is asking them to get it wrong.
+
+    Both profiles are resolved because an adopted adapter is written back as a
+    `.rbs`, and a `.rbs` records the profiles it maps between. The **old** one
+    is resolved rather than opened — nothing here runs the old model — with the
+    index's own dimension as the fallback, which is the same arrangement
+    `open_embedders` uses and for the same reason: the index is authoritative
+    about the model it was built with.
+
+    Raises:
+        ConfigError: When the opened model's profile is not the one the adapter
+            was fitted against. A refit under a different prefix scheme would
+            produce pairs the adapter never saw and adopt a map fitted to them.
+    """
+    if not enabled:
+        return None, None
+
+    from rebasis.cli._profiles import resolve_profile
+    from rebasis.embed import open_embedder
+    from rebasis.errors import ConfigError
+
+    new_profile = resolve_profile(manifest.new_model_id, None)
+    embedder = open_embedder(
+        manifest.new_model_id,
+        device=None if device == "auto" else device,
+        profile=new_profile,
+    )
+    fingerprint = embedder.profile.fingerprint()
+    if fingerprint != manifest.new_profile_fingerprint:
+        raise ConfigError(
+            f"{manifest.new_model_id} encodes differently now than when the adapter "
+            "was fitted, so a refit would fit against pairs the adapter never saw.",
+            hint=(
+                "Drop --refit, or re-fit the adapter with `rebasis fit "
+                "--direction old_to_new` against the current profile."
+            ),
+            context={
+                "model_id": manifest.new_model_id,
+                "expected": manifest.new_profile_fingerprint,
+                "actual": fingerprint,
+            },
+        )
+
+    old_profile = resolve_profile(manifest.old_model_id, None, fallback_dim=store.dimension())
+    return embedder, (old_profile, embedder.profile)
+
+
+def _check_direction(manifest: AdapterManifest, adapter_path: Path) -> None:
+    """Refuse an adapter that maps the wrong way, before anything is written.
+
+    An adapter has a direction and `migrate` needs the one that is not produced.
+    `fit` writes ``query_to_old``: a map from the **new** model's space into the
+    index's, which is what lets `Bridge` send a new-model query at an untouched
+    index. `migrate` does the opposite job — it rewrites the **indexed document
+    vectors** — and for that it needs ``old_to_new``, a map out of the index's
+    space and into the new model's.
+
+    Handing it the query map applies a function outside its domain, and nothing
+    downstream notices: the write succeeds, the count is right, the text
+    survives, the read-back verifies (it compares what was written against what
+    comes back, not against anything meaningful), and `migrate`'s own index
+    health check measures the store's search against exact kNN *over the vectors
+    it now holds*, which is a property of the index structure rather than of the
+    vectors' meaning. Every existing guard passes. The index is destroyed.
+
+    **Measured**, on 4,000 synthetic documents where both spaces are known
+    exactly and the bridge itself scores 1.000 against the untouched index: the
+    index a completed migration leaves behind answers at recall@1 **0.000** to a
+    raw new-model query, **0.000** to a bridged query and **0.000** to an
+    old-model query. There is no query that is correct against it. For an
+    orthogonal adapter the arithmetic says why — ``A(q)·A(d) = q·d``, so a
+    bridged query against a fully migrated index reduces to the naive swap.
+
+    ``rebasis fit --direction old_to_new`` produces the map this needs, and the
+    check stays because the two files are indistinguishable from the outside: an
+    `.rbs` is an `.rbs`, both directions are the same shape, and the wrong one
+    fails silently rather than loudly. The direction is recorded in the manifest
+    precisely so that something can read it before the write.
+    """
+    from rebasis.errors import ConfigError
+
+    if manifest.direction == "old_to_new":
+        return
+    raise ConfigError(
+        f"{adapter_path.name} maps queries into the index's space "
+        f"(direction={manifest.direction!r}); `migrate` rewrites the indexed "
+        "vectors and needs a map in the opposite direction.",
+        hint=(
+            "Re-fit with `rebasis fit --direction old_to_new`, which produces "
+            "the map `migrate` needs. This adapter is the one `rebasis.Bridge` "
+            "serves with — it maps queries, and it leaves the index untouched."
+        ),
+        context={"direction": manifest.direction, "adapter": adapter_path.name},
+    )
+
+
 def _check_dimensions(store: VectorStore, adapter: BaseAdapter) -> None:
     """Refuse a dimension mismatch before writing anything.
 
@@ -579,26 +863,6 @@ def _enqueue_all(
     if chunk:
         queued += engine.prepare(chunk, priorities=priorities, total=total)
     return queued
-
-
-def _read_access_log(path: Path | None) -> dict[str, float] | None:
-    """Read access counts, so hot records migrate first."""
-    if path is None:
-        return None
-
-    import json
-
-    counts: dict[str, float] = {}
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            payload = json.loads(stripped)
-            record_id = payload.get("id") or payload.get("record_id")
-            if record_id is not None:
-                counts[str(record_id)] = float(payload.get("count", 1))
-    return counts or None
 
 
 def _memory_ceiling(value: str | None) -> int | None:
@@ -745,7 +1009,10 @@ def status_command(
     for job, stats in jobs:
         table.add_row(
             job.job_id,
-            job.state,
+            # A job that has been asked to stop and has not stopped yet is still
+            # running, and saying only "running" hides the one fact the person
+            # who just asked is waiting on.
+            f"{job.state} [yellow](pausing)[/yellow]" if job.pause_requested else job.state,
             job.adapter_type,
             f"{stats.completed_fraction:.0%}",
             f"{stats.done:,}",
@@ -774,6 +1041,12 @@ def rollback_command(
     upsert — exact for a store that stores what it is given, and within one
     float32 ulp for one that normalises on write, such as Chroma in cosine
     space.
+
+    On a store that quantizes, "the original" means something narrower and
+    `migrate` says so before it writes: the shadow holds the store's own decoded
+    view of its vectors, because that is what it returned when they were read,
+    so this restores the state the migration replaced rather than the vectors
+    the embedding model produced.
     """
     from rebasis.cli._pipeline import audit_writer_for, open_target_store
     from rebasis.errors import ConfigError
@@ -811,6 +1084,11 @@ def rollback_command(
         console.print(f"[bold]rollback[/bold]  job {job_id}")
         console.print(f"  store     {store_uri}")
         console.print("  restores  the original vectors from the shadow copy")
+        # Read off the shadow's own manifest rather than off the job's config:
+        # the shadow is the thing being restored from, and it is the only record
+        # that cannot disagree with itself. A user deciding whether to proceed
+        # is deciding on exactly this.
+        _note_shadow_precision(directory / SHADOW_DIR, job_id)
         console.print()
         if not confirm("Proceed?", assume_yes=yes, no_input=no_input):
             console.print("[yellow]Nothing was written.[/yellow]")
@@ -916,3 +1194,135 @@ def gc_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI flag
     with state_lock(directory, operation="gc"):
         freed = apply_gc(plan, confirmed=i_understand)
     console.print(f"\n[green]Freed[/green] {freed / 1024**2:.1f} MB")
+
+
+@handle_errors
+def pause_command(
+    job_id: Annotated[str, typer.Argument(help="The running job to stop")],
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Ask a running migration to stop after its current batch.
+
+    The engine reads the request at the top of every batch and finishes the one
+    it is in, so this returns immediately and the job stops a moment later. That
+    is deliberate: killing the process mid-batch is already safe — the queue is
+    the checkpoint and a shadow is always written before the vector it copies is
+    overwritten — but it leaves the store holding a batch nobody has verified,
+    and a clean stop at a boundary does not.
+
+    Takes no lock. The migration it is talking to holds the state lock for its
+    whole run, so a command that waited for it would wait for the thing it is
+    trying to interrupt. What makes that safe is that this writes one column no
+    other process writes: `pause_requested` is a *request*, and only the engine
+    ever says what state a job is in.
+
+    Resume with `rebasis resume <job-id>`, which clears the request.
+    """
+    from rebasis.cli._pipeline import audit_writer_for
+    from rebasis.errors import ConfigError
+    from rebasis.manifest import JobRow, ManifestDB, default_state_dir, manifest_path
+    from rebasis.migrate import JobState, request_pause
+    from rebasis.observability import Events
+
+    directory = state_dir or default_state_dir()
+    path = manifest_path(directory)
+    if not path.exists():
+        raise ConfigError(
+            f"There is no rebasis state at {directory}.",
+            hint="Point --state-dir at the directory the migration was started from.",
+        )
+
+    with ManifestDB(path) as db:
+        row = db.query_one("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+        if row is None:
+            raise ConfigError(
+                f"No migration job {job_id!r}.",
+                hint="`rebasis status` lists every job this state directory knows.",
+                context={"job_id": job_id},
+            )
+        job = JobRow.from_row(row)
+        if not request_pause(db, job_id):
+            # The guard is in the statement, so reaching here means the state
+            # changed under us or was never `running`. Either way the row that
+            # was read is what the user needs to see.
+            raise ConfigError(
+                f"Job {job_id} is {job.state}, not running.",
+                hint=(
+                    "Only a running job can be asked to pause. "
+                    f"`rebasis resume {job_id}` continues one that stopped."
+                ),
+                context={"job_id": job_id, "state": job.state},
+            )
+
+        writer = audit_writer_for(directory)
+        writer.write(
+            Events.MIGRATE_PAUSE_REQUESTED,
+            inputs={"job_id": job_id},
+            outputs={"job_id": job_id, "state": str(JobState.RUNNING)},
+            subject=job_id,
+        )
+
+    console.print(f"[yellow]Pause requested[/yellow] for {job_id}.")
+    console.print("  [dim]it stops at the end of the batch it is in[/dim]")
+    console.print(f"  [dim]resume with `rebasis resume {job_id}`[/dim]")
+
+
+@handle_errors
+def resume_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI flag
+    job_id: Annotated[str, typer.Argument(help="The job to continue")],
+    batch: Annotated[
+        int | None, typer.Option("--batch", help="Records per batch; omit to keep migrate's")
+    ] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="Stop after this many")] = None,
+    power_aware: Annotated[
+        bool | None, typer.Option("--power-aware/--no-power-aware", help="Pause on low battery")
+    ] = None,
+    max_memory: Annotated[
+        str | None, typer.Option("--max-memory", help="Ceiling, e.g. 2GB")
+    ] = None,
+    health_check: Annotated[
+        bool | None,
+        typer.Option("--health-check/--no-health-check", help="Measure the index either side"),
+    ] = None,
+    rebuild_index: Annotated[
+        bool, typer.Option("--rebuild-index", help="Rebuild the search structure at the end")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation")] = False,
+    no_input: Annotated[
+        bool, typer.Option("--no-input", help="Never prompt; fail instead of asking")
+    ] = False,
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Continue a migration that stopped, from where it stopped.
+
+    The same thing as `rebasis migrate --resume <job-id>`, and it forwards to
+    it: the adapter and the store URI come off the job row, the queue is the
+    checkpoint, and any outstanding pause request is cleared as the engine
+    starts. It exists because "pause" and "resume" is the pair a person reaches
+    for, and because `migrate` is the command that starts something new.
+
+    Only the flags that describe *this run* are here. `--priority` and
+    `--access-log` are not: they order the queue, the queue was ordered when the
+    job was created, and re-ordering half a migration would be a different job.
+    Everything left out keeps whatever `migrate` defaults to — the defaults live
+    in one place, and passing them on from here would be a second copy of them.
+    """
+    overrides = {
+        name: value
+        for name, value in (
+            ("batch", batch),
+            ("limit", limit),
+            ("power_aware", power_aware),
+            ("max_memory", max_memory),
+            ("health_check", health_check),
+        )
+        if value is not None
+    }
+    migrate_command(
+        resume=job_id,
+        rebuild_index=rebuild_index,
+        yes=yes,
+        no_input=no_input,
+        state_dir=state_dir,
+        **overrides,
+    )

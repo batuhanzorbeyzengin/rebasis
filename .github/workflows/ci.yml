@@ -45,9 +45,15 @@ jobs:
         # the effect was that a lint failure in examples/ could not be seen
         # until the release job ran. `scripts/` used to be listed here too; it
         # is not in a clone, so ruff silently linted nothing for it.
+        #
+        # `tools/` is here because the pre-commit hook lints it and this did
+        # not: `check_citations.py` runs in this very job, `bridge_band.py` is
+        # what every published measurement comes out of, and a fork's pull
+        # request never runs the hook. Exactly the divergence the paragraph
+        # above describes, one directory over.
         run: |
-          uv run ruff check src tests spikes examples
-          uv run ruff format --check src tests spikes examples
+          uv run ruff check src tests spikes examples tools
+          uv run ruff format --check src tests spikes examples tools
       - name: mypy --strict
         run: uv run mypy src
       - name: import-linter
@@ -67,6 +73,13 @@ jobs:
             echo "::error::docs/reference is stale. Run 'just docs-gen' and commit."
             exit 1
           }
+      - name: every arXiv citation names its paper
+        # The offline half: that `docs/citations.toml` and the committed
+        # documentation name the same set of papers. It touches no network, so it
+        # cannot go red because arXiv is down — which is the only reason a
+        # citation check is safe to put on the merge path at all. Whether the
+        # recorded titles are *true* is the weekly `citations` job's question.
+        run: uv run python tools/check_citations.py
 
   # The only job that runs the suite. It was two — a `tests` job and this one
   # — running very nearly the same tests twice, for fourteen minutes of runner

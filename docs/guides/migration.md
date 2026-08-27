@@ -28,7 +28,9 @@ caveat.
 
 Each of these runs the full migrate-and-rollback suite on every commit: the
 vectors actually change, the record count does not, text survives, and `rollback`
-restores the originals byte for byte.
+restores the originals byte for byte. "The originals" means something narrower
+on a store that keeps compressed codes rather than vectors — *If your index is
+stored quantized*, below, is what rebasis detects and what it then says.
 
 | Backend | Migrate | Notes |
 |---|---|---|
@@ -52,8 +54,8 @@ store *before* the new ones are written. A crash before the write costs nothing;
 a crash after the write, without the shadow, would cost the originals.
 
 **The queue is the checkpoint.** Interrupt it — Ctrl-C, a closed laptop, a
-kill -9 — and `--resume <job-id>` continues from the last completed batch. There
-is no separate checkpoint file to get out of sync with reality.
+kill -9 — and `rebasis resume <job-id>` continues from the last completed batch.
+There is no separate checkpoint file to get out of sync with reality.
 
 **It verifies what it wrote.** After each batch, a sample of the written records
 is read back from the store and compared. A store that silently fails to write is
@@ -68,10 +70,23 @@ kept it".
 
 ## Running it
 
+`migrate` needs an adapter pointing **out** of the index, not into it. That is
+the one thing it cannot be run without, and until this release nothing produced
+one — so the documented sequence handed it the query map instead, and every guard
+the tool had let that through. The reasoning is in [what changed](#what-changed-and-why),
+below; the short version is that an index rewritten with a query map answers
+recall@1 **0.000** to every query type there is.
+
 ```bash
-rebasis migrate \
-  --adapter adapter.rbs \
-  --store chroma:///path/to/db#documents
+# The map migrate needs. Note --direction; without it `fit` produces the
+# query-side map, which `Bridge` serves with and `migrate` now refuses.
+rebasis fit \
+  --store chroma:///path/to/db#documents \
+  --old <old-model> --new <new-model> \
+  --direction old_to_new \
+  --out forward.rbs
+
+rebasis migrate --adapter forward.rbs --store chroma:///path/to/db#documents
 ```
 
 It shows what it will do — how many records, which store, which adapter, which
@@ -94,7 +109,59 @@ Useful flags:
 | `--max-memory 2GB` | A ceiling. The batch size is computed from it — you should not have to. |
 | `--priority access --access-log log.jsonl` | Migrate what you actually read first, so quality improves where you will notice. |
 | `--power-aware/--no-power-aware` | Pause on battery. On by default. |
-| `--resume <job-id>` | Continue an interrupted job. |
+| `--shadow-precision float16` | Half the shadow's disk, a rollback that is close rather than exact. See below. |
+| `--refit` | Refit the adapter part-way through, on records not yet migrated. Off by default; see below. |
+| `--resume <job-id>` | Continue an interrupted job. `rebasis resume <job-id>` is the same thing. |
+
+### Whether to run it at all
+
+Measured across 51 runs on seventeen corpora with human relevance judgements
+([the band](../migration-band.md)):
+
+| | |
+|---|---|
+| a completed migration delivers | **0.727** of a full reindex, on average |
+| bridging, on the same runs | **0.719** |
+| the two track each other at | Spearman **0.993** |
+| migrating beat leaving the index alone in | **5 of 51** |
+
+So migrating and bridging are worth the same amount, and both are usually worth
+less than doing nothing. That is
+[ADR 10](../adr/0010-retention-is-bounded-by-the-source.md) reaching the document
+side: the same source space under the same family of map carries the same
+amount, whichever end you apply it to.
+
+**What migrating buys is the adapter leaving the query path** — no map on the hot
+path, no `.rbs` to ship with your service, and the new model querying its own
+space. What it costs is rewriting every vector, the shadow copy behind it, and a
+window in which the index holds two spaces. Choose on those grounds; quality is
+not one of them.
+
+### What changed, and why
+
+An adapter has a direction, and the two are mirror images:
+
+| direction | maps | used by |
+|---|---|---|
+| `query_to_old` | a new-model **query** into the index | `rebasis.Bridge` |
+| `old_to_new` | the **stored vectors** into the new model's space | `rebasis migrate` |
+
+`rebasis fit` produced only the first, `migrate` never checked, and the README
+showed one being piped into the other. Applying the query map to document vectors
+passed every guard: the write landed, the count held, the text survived, the
+read-back compared what was written against what came back, and the index-health
+check measured the store's search against exact kNN over the vectors it now held.
+None of those asks whether the vectors still mean anything.
+
+Measured on data where both spaces are known exactly and the bridge itself scores
+recall@1 1.000 against the untouched index, the index a completed migration left
+behind answered **0.000** to a raw new-model query, **0.000** to a bridged query
+and **0.000** to an old-model query. Where the two models have the same width it
+failed silently; where they differ it failed with a dimension error at query time,
+which is why it survived on some ladders and not others.
+
+Both directions are now guarded. `migrate` refuses a `query_to_old` adapter before
+it opens the store, and `Bridge.load` refuses an `old_to_new` one.
 
 ## Stopping short leaves two spaces in one index
 
@@ -179,6 +246,92 @@ rebasis status
 Takes no lock, so it works while a migration is running — which is exactly when
 you want it.
 
+## Refitting part-way through
+
+```bash
+rebasis migrate --adapter adapters/forward.rbs --store ... --refit
+```
+
+Off by default. It samples records that have **not** been migrated yet,
+re-embeds them with the new model — the one recorded in the adapter's manifest,
+so there is no second flag to get wrong — refits on those pairs alone, and
+adopts the result only if it beats the adapter in use by 0.01 on a held-out
+slice.
+
+**It is for one situation.** Measured over 216 cells, on a corpus that has not
+changed a refit is a pair-count effect worth a median +0.0075 at three times the
+fit budget, and nothing clears the adoption threshold. On an index that **grew
+into a domain the adapter never saw** — a vault that gained a department while
+the migration was running — 1,000 pairs drawn from what is left are worth a
+median **+0.16 nDCG** and beat 8,000 pairs drawn from the migrated half by
+**+0.20**. [The numbers](../continuous-refit.md).
+
+The guard is why it is safe to leave on in either case: it declines in the first
+and adopts in the second, and every attempt is audited with its reason.
+
+An adopted adapter is written to `.rebasis/adapters/<job>-refit-<n>.rbs` and the
+job is pointed at it, so `rebasis resume` continues with it rather than
+reloading the file the job started with. It needs a store that returns document
+text — there is no way to make a real pair without re-embedding one — and it
+says so at the start of the run rather than at the first checkpoint.
+
+## Stopping it, and starting it again
+
+```bash
+rebasis pause <job-id>     # stops after the current batch
+rebasis resume <job-id>    # picks up where it stopped
+```
+
+Killing the process is safe and always was: the queue is the checkpoint, and a
+shadow copy is written before the vector it copies is overwritten. What it is
+not is *clean*. A kill lands in the middle of a batch, and that batch's records
+are left in the store without having been read back and compared — verified
+writes are a per-batch guarantee, and half a batch does not get one.
+
+`pause` stops at a batch boundary instead. It returns immediately and the job
+stops a moment later, at the end of the batch it is in.
+
+Like `status`, it takes no lock — the migration holds the state lock for its
+whole run, so waiting for the lock would mean waiting for the thing you are
+trying to stop. What makes that safe is that `pause` writes one column nothing
+else writes. It records a **request**; only the engine ever says what state a job
+is in. While the request is outstanding, `status` shows the job as
+`running (pausing)`, and `--json` carries it as a separate `pause_requested`
+field.
+
+A request never outlives the run it was made for: it is cleared when a run ends
+and again when one starts. A process killed between `rebasis pause` and the
+engine reading it cannot leave behind a flag that silently pauses tomorrow's run.
+
+A paused job is a job stopped short, so everything under
+[Stopping short leaves two spaces in one index](#stopping-short-leaves-two-spaces-in-one-index)
+applies to it. Pausing is not a way to stop safely and walk away; it is a way to
+stop safely and come back.
+
+## Half the shadow, if you want it
+
+```bash
+rebasis migrate --adapter ... --store ... --shadow-precision float16
+```
+
+The shadow is `N x d x 4` bytes at the default `float32`, and half that at
+`float16`. What the half costs is the bit-identical restore.
+
+Measured over 68 corpus/model runs: no vector leaves the format, the top-10
+**set** comes back on 99.78% of queries at worst, and nDCG@10 against human
+judgements moves by at most **0.0017** — inside ARR's own confidence interval.
+What does move is the *order* within the top ten, on about 2% of queries.
+[The numbers](../shadow-precision.md).
+
+`float32` stays the default. A couple of gigabytes of temporary disk is cheaper
+than any argument about whether 0.0017 mattered on your index, and the space
+comes back when `rebasis gc` removes the shadow.
+
+If you do use it, nothing pretends otherwise: the disk-space plan before the
+confirmation says the rollback becomes approximate, and `rebasis rollback` prints
+the precision it is restoring from — read off the shadow file itself rather than
+off the job's configuration, because the shadow is the thing being restored from.
+
 ## Rolling back
 
 ```bash
@@ -208,6 +361,110 @@ a normalising store they would find it false.
 The job records which store it wrote to, so you do not have to remember the URI
 months later — which is when a rollback is actually wanted.
 
+## If your index is stored quantized
+
+Everything above assumes the store keeps what it is given. Increasingly it does
+not: int8 scalar quantization, product quantization and binary codes are how a
+large index is made to fit, and a store that holds a code cannot hand back the
+vector the code was made from.
+
+`migrate` checks before it writes anything and says so in the plan, above the
+confirmation. It does not refuse. A quantized index is a deliberate engineering
+choice and migrating one is a legitimate thing to want; what you would not have
+without the check is a correct reading of the paragraph above.
+
+**sqlite-vec is the exception, and the exception is the storage engine's.** A
+`vec0` column declares an element type, and measured against the shipped
+extension, inserting a float32 vector into an `int8` or `bit` column is refused
+outright — as is querying one with a float32 vector. rebasis produces float32 and
+nothing else, so on such a table `migrate` and `rebasis.Bridge` were never going
+to work. The backend declares `can_upsert_vectors=False` for them, which stops
+`migrate` at the capability check before a job is opened rather than at a SQL
+error after the first batch's originals have been deleted.
+
+`probe` still works on an `int8` table: one byte per component decodes to a
+direction, quantization removed a single scale across the vector, and everything
+here normalises. A `bit` table cannot even be read — it packs one bit per
+component and `bit[7]` is a legal declaration, so the number of components is not
+recoverable from the blob and there is nowhere else to read it from. The backend
+declares `can_read_vectors=False` and says why.
+
+**What the shadow copy holds.** rebasis shadows what the store *returns*, and a
+quantized store returns a value decoded from its stored code. The shadow is
+still bit-identical — to that decoded view. It is not a copy of the vectors your
+embedding model produced; those stopped being retrievable when the collection
+was built.
+
+**What `rollback` therefore restores.** The state the migration replaced,
+exactly: the vectors this collection read back the moment before `migrate`
+started. It does not recover precision the collection had already spent.
+
+**It can stop the run.** After every batch `migrate` re-reads a sample and
+compares it to what it sent, to `VERIFY_ATOL` — the constant is in
+`src/rebasis/migrate/engine.py`, and `migrate --dry-run` prints whatever it
+currently is rather than a figure copied into prose. That check exists to catch
+a store that accepts a write and does not keep it; a store that re-encodes on
+write fails it for a different reason. Measured in
+`tests/integration/test_quantized_roundtrip.py`, an 8-bit scalar-quantized FAISS
+index deviates by more than that tolerance in both directions — so on a codec
+that coarse the job stops on its first batch, with the shadow copy already
+written and nothing lost.
+
+### What each backend reports
+
+`StoreCapabilities.quantized` has three values, and the third is the point.
+`False` is a promise that what you write is what you read back; a backend that
+answered `False` without looking would be making a guarantee it could not keep.
+So the default is `None` — *not determinable* — and that is what a third-party
+store behind the LangChain or LlamaIndex bridge honestly is.
+
+| Backend | Read from | Reports |
+|---|---|---|
+| `faiss` | `sa_code_size()` against `4 × d`, through the `IndexIDMap2` wrapper | `True` for PQ, scalar-quantized, LSH and friends; `False` for a flat index |
+| `sqlite-vec` | `vec_type()` on a stored vector | `float32` → `False`; `int8` and `bit` → `True`; empty table → `None` |
+| `qdrant` | `VectorParams.datatype` in the collection config | `float16`, `uint8`, `turbo4` → `True`; otherwise `False` |
+| `lancedb` | the Arrow element type of the vector column | narrower than 32 bits → `True` |
+| `chroma` | nothing to read | `False` |
+| `memory` | nothing to read | `False` |
+
+Two of those answers are deliberately narrower than they first look, and both
+are worth knowing if you go looking for a warning that does not appear.
+
+**Qdrant's `quantization_config` is not this.** Qdrant builds the quantized
+codes *beside* the vectors rather than instead of them — which is what makes its
+own rescoring possible — so a scalar- or binary-quantized Qdrant collection
+still returns the original vector, and `rollback` on one is exact. Qdrant draws
+the line itself: "datatypes are distinct from the quantization feature.
+Quantization creates a separate quantized representation of vectors alongside
+the original ones, while datatypes determine the representation of the original
+vectors themselves." So it is `datatype` that rebasis reads.
+
+**LanceDB's `IVF_PQ` is not this either.** The compressed copy lives in the
+index's own columns and the vector column is untouched, which is why LanceDB
+documents `bypass_vector_index` as a way to get ground-truth results. What does
+change the round trip there is a vector column that is not float32 — `uint8`
+columns are a supported way to store binary embeddings — and that is what is
+read.
+
+**FAISS is the one where a quantized index used to pass silently.** rebasis
+already refuses a FAISS index it cannot reconstruct from, but that catches only
+the ones where `reconstruct` *raises*, such as an IVF index with no direct map.
+An `IndexPQ` or an `IndexScalarQuantizer` reconstructs happily and returns a
+decode. Those are now declared rather than refused.
+
+### Reading it from a script
+
+`migrate` has no `--json`. The finding is written into the audit trail with the
+job, as `store_quantized` among the inputs of the `migrate.job.started` record:
+
+```bash
+rebasis audit export --out trail.jsonl
+jq 'select(.action == "migrate.job.started") | .inputs.store_quantized' trail.jsonl
+```
+
+`true`, `false` and `null` are three different answers there, and `null` means
+the store could not be asked — not that it keeps what it is given.
+
 ## `--no-keep-original`
 
 Disables the shadow copy. It saves disk and it makes the migration
@@ -234,7 +491,7 @@ Removing a *shadow copy* makes that job permanently irreversible, so it needs
 
 The batch is marked `FAILED`, the job stops, and the failing records keep their
 error code. Everything already written stays written; everything not yet written
-stays queued. Fix the cause, then `--resume`.
+stays queued. Fix the cause, then `rebasis resume <job-id>`.
 
 The one thing that never happens is a partially-written record: the shadow is
 taken first, the write is one call, and the read-back verifies it.

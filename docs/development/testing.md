@@ -94,16 +94,29 @@ it, say so in the pull request and it will be measured on the host.
 
 ## What CI runs, and what it no longer does
 
-Six jobs, one of which runs the suite. It was ten.
+Six jobs on a pull request, one of which runs the suite. It was ten.
 
 | job | what it is for |
 |---|---|
-| lint and types | ruff, mypy, import-linter, interrogate, generated catalogues |
+| lint and types | ruff, mypy, import-linter, interrogate, generated catalogues, citations |
 | tests and coverage floors | the suite, plus the per-module floors |
 | no torch, no otel | the core install works without the optional halves |
 | lowest direct dependencies | the declared floors resolve and pass |
 | docs build | `mkdocs --strict`; a dead link is a failure |
 | secret scan | gitleaks |
+
+A seventh job is not in that table, because it is not on the pull-request
+path. `arXiv still says what we say it says` lives in its own workflow —
+`.github/workflows/citations.yml`, because a `schedule:` trigger applies to
+every job in the workflow carrying it, and putting one in `ci.yml` would run all
+six of the above once a week for nothing. It runs weekly and on demand, and asks
+arXiv whether every identifier in `docs/citations.toml` still carries the title
+recorded beside it. The offline half of the same check — that the manifest and
+the committed documentation name the same set of papers — runs in `lint and
+types` on every pull request, because it needs no network and so cannot go red
+for a reason that has nothing to do with the change under review. The split is
+the same one the perf layer got, for the same reason: a gate that fails on
+something the author did not do is a gate people learn to ignore.
 
 What went, and why:
 

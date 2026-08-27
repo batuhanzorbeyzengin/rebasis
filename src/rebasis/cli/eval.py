@@ -136,6 +136,7 @@ def _score(  # noqa: PLR0913 - one argument per measurement input
         print_result,
     )
     from rebasis.probe.session import probe_store
+    from rebasis.storage import default_embedding_cache_dir
 
     adapter_type = manifest.adapter_type
     if not adapter_type:
@@ -169,6 +170,10 @@ def _score(  # noqa: PLR0913 - one argument per measurement input
             seed=seed,
             methods=[adapter_type],
             device=device,
+            # `eval` takes no `--state-dir`, so this resolves the default —
+            # which is the same place `probe` and `fit` put it, and scoring an
+            # adapter re-embeds the collection they already embedded.
+            cache_dir=default_embedding_cache_dir(),
             on_stage=steps.stage,
         )
 

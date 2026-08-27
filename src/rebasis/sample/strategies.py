@@ -237,7 +237,11 @@ def draw_sample(  # noqa: PLR0913 - strategy dispatch needs every input it forwa
 
 
 def split_disjoint(
-    sample: SampleResult, query_size: int, *, seed: int = 0
+    sample: SampleResult,
+    query_size: int,
+    *,
+    seed: int = 0,
+    weights: FloatArray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Split a sample into a query set and a fit set that share nothing.
 
@@ -245,14 +249,57 @@ def split_disjoint(
     ARR number the tool has produced becomes meaningless — so this fails hard
     rather than warning.
 
+    ``weights`` draws the **query proxies** with probability proportional to
+    them, leaving the sample itself uniform. That is where an access log
+    belongs, and it is not where it looks like it belongs: the sample does two
+    jobs at once — it is the mini-index every measurement runs against, and it
+    is the pool the queries come out of — so weighting the *sample* fills the
+    mini-index with frequently-read documents and changes the distractors, which
+    is a property of the index rather than of the questions asked of it.
+
+    Measured over 36 cells, weighting the split leaves the estimate about half
+    as far from the whole-corpus quantity as weighting the sample does — +0.025
+    against +0.051 — and the bootstrap interval stays within 6% of its correct
+    width. `docs/access-weighting.md` separates that from the effect a sample
+    has anyway: a mini-index is an easier place to retrieve in than the corpus
+    it came from, so **any** design sits above the whole-corpus quantity, and
+    today's uniform default sits +0.048 above it.
+
+    Args:
+        sample: The drawn sample, whose ``indices`` are split.
+        query_size: How many records become query proxies.
+        seed: Recorded in the audit trail so a decision can be replayed.
+        weights: Optional per-record weights aligned to ``sample.indices``,
+            typically access frequency.
+
     Raises:
         LeakageDetected: If the two sets intersect.
         InsufficientSamples: If there is nothing left to fit on.
     """
     rng = np.random.default_rng(seed)
-    shuffled = rng.permutation(sample.indices)
-    query_size = min(query_size, max(1, shuffled.size // 2))
-    query_ids, fit_ids = shuffled[:query_size], shuffled[query_size:]
+    query_size = min(query_size, max(1, sample.indices.size // 2))
+    if weights is None:
+        shuffled = rng.permutation(sample.indices)
+        query_ids, fit_ids = shuffled[:query_size], shuffled[query_size:]
+    else:
+        probability = np.asarray(weights, dtype=np.float64)
+        mass = float(probability.sum())
+        if probability.size != sample.indices.size or mass <= 0:
+            # A weight vector that does not line up with the sample, or that is
+            # all zeros, describes nothing. Falling back to uniform is right
+            # rather than raising: the caller asked for a probe, the weights
+            # were an optimisation on top of one, and `probe_store` reports
+            # which of the two it actually ran.
+            shuffled = rng.permutation(sample.indices)
+            query_ids, fit_ids = shuffled[:query_size], shuffled[query_size:]
+        else:
+            picked = rng.choice(
+                sample.indices.size, size=query_size, replace=False, p=probability / mass
+            )
+            mask = np.zeros(sample.indices.size, dtype=bool)
+            mask[picked] = True
+            query_ids = sample.indices[mask]
+            fit_ids = sample.indices[~mask]
 
     overlap = np.intersect1d(query_ids, fit_ids)
     if overlap.size:

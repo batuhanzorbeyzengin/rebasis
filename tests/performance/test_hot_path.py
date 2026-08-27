@@ -177,11 +177,21 @@ def test_normalising_one_vector_takes_the_short_route() -> None:
 
 @pytest.mark.perf
 def test_the_centred_adapter_folds_its_offset(adapters: dict[str, object]) -> None:
-    """`(x − μs)R + μd` is `xR + b`, and the folded form is what ships.
+    """The fold costs a vector add, not a second pass over the array.
 
-    One fewer full-length array operation per query. Asserted against plain
-    Procrustes, which does the same matmul with nothing added: if the centred
-    adapter ever costs materially more, the fold has been undone.
+    **The fold itself is asserted in `tests/property/test_adapters.py`**, as the
+    algebraic identity it is. This is the cost check beside it, and the split is
+    deliberate: at 1.5x this assertion failed on two runs in five on an *idle*
+    host while the fold was intact — `_passthrough` true, scale 1.0, the bias
+    present, and a directly measured ratio of 1.01. A wall clock cannot separate
+    "the fold was undone" from "the machine was busy", so it should not be the
+    thing asked to.
+
+    What the fold is worth: the folded path is one matmul plus one vector add
+    where plain Procrustes is one matmul, so the true ratio is a few percent.
+    The bound is 2.0 because what it is here to catch is a *second pass over the
+    array* — a subtract or a copy per query, which at these widths would double
+    the work and not merely add a percent to it.
     """
     rng = np.random.default_rng(6)
     query = l2_normalize(rng.standard_normal((1, DIM)).astype(np.float32))
@@ -189,9 +199,9 @@ def test_the_centred_adapter_folds_its_offset(adapters: dict[str, object]) -> No
     centred = _median_microseconds(lambda: adapters["procrustes_centered"].apply(query))  # type: ignore[attr-defined]
     plain = _median_microseconds(lambda: adapters["procrustes"].apply(query))  # type: ignore[attr-defined]
 
-    assert centred < plain * 1.5, (
+    assert centred < plain * 2.0, (
         f"centred Procrustes ({centred:.1f} µs) against plain ({plain:.1f} µs): "
-        "the centring should be one added vector, not two"
+        "the centring should be one added vector, not a second pass over the array"
     )
 
 

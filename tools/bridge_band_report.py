@@ -27,6 +27,19 @@ Three views, all from the same file:
     The aggregate claims: how often the break-even predicted the outcome, the
     correlation between upgrade gain and retention, and the same for recall at
     every cut-off measured.
+
+``--view protocol``
+    The same adapter, the same corpus, the same models, under each evaluation
+    protocol the harness can run. Three protocols vary two things between them —
+    who asks the question and what counts as a right answer — so the view walks
+    them one step at a time and prints what each step is worth. This is what
+    `docs/vs-drift-adapter.md` is built from.
+
+Every view except ``protocol`` reads **one** protocol's rows, ``t1-judged`` by
+default, because averaging a ratio against human judgements together with a
+ratio against a model's own neighbours produces a number that is not about
+anything. Rows written before the protocol flag existed carry no protocol field
+and are read as ``t1-judged``, which is what they are.
 """
 
 from __future__ import annotations
@@ -42,7 +55,21 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-CONFIGURATIONS = ("status_quo", "naive_swap", "bridged", "full_reindex")
+CONFIGURATIONS = (
+    "status_quo",
+    "naive_swap",
+    "naive_swap_padded",
+    "bridged",
+    "ceiling_old_space",
+    "full_reindex",
+)
+
+#: How the protocol view orders its columns: the published protocol first, then
+#: one change at a time towards rebasis' own. Rows are grouped by *tag* rather
+#: than by protocol, so `t0-knn@10` and `t0-knn@1` are two columns and never one
+#: — they are two different ground truths, and averaging them together produces
+#: a number that is not about anything.
+PROTOCOL_RANK = {"t0-knn": 0, "t0-knn-real-queries": 1, "t1-judged": 2}
 
 
 def load(path: Path) -> list[dict[str, Any]]:
@@ -50,6 +77,37 @@ def load(path: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
+
+
+def protocol_of(row: dict[str, Any]) -> str:
+    """Which protocol produced a row, at which ground-truth depth.
+
+    The **tag**, not the bare protocol name. A file can hold `t0-knn` rows at
+    two ground-truth depths, and those are two measurements that differ by 0.26
+    on average (`docs/m0-findings.md`, section 3) — grouping them under one name
+    would average a top-10 set overlap together with a nearest-neighbour hit
+    rate. This function is the only place that decides, so there is one way for
+    it to be wrong rather than five.
+
+    Rows predating the flag have neither field and are ``t1-judged`` — that is
+    what the harness measured before there was anything else to measure.
+    """
+    return str(row.get("protocol_tag", row.get("protocol", "t1-judged")))
+
+
+def base_protocol(tag: str) -> str:
+    """The protocol a tag belongs to, with any depth or replication stripped."""
+    return tag.partition("@")[0]
+
+
+def tag_order(tags: set[str]) -> list[str]:
+    """Order tags for display: by protocol, then deepest ground truth first."""
+
+    def key(tag: str) -> tuple[int, int, str]:
+        depth = tag.partition("@")[2].partition("x")[0]
+        return (PROTOCOL_RANK.get(base_protocol(tag), 9), -int(depth or 0), tag)
+
+    return sorted(tags, key=key)
 
 
 def short(model_id: str) -> str:
@@ -272,16 +330,203 @@ def summary_view(rows: list[dict[str, Any]], cutoffs: Sequence[int]) -> str:
     return "\n".join(out)
 
 
+def _retention(row: dict[str, Any], metric: str) -> float | None:
+    """Bridged over a full reindex, the quantity every protocol reports.
+
+    Under a kNN ground truth the reindex scores exactly 1.0 by construction — it
+    is the computation that produced the judgements — so this reduces to the
+    bridged score itself, which is what arXiv:2509.23471 calls ARR. Under human
+    judgements it is a real ratio. Writing it the same way in both places is
+    what makes the columns comparable.
+    """
+    bridged = _metric(row, "bridged", metric)
+    reindex = _metric(row, "full_reindex", metric)
+    if bridged is None or not reindex:
+        return None
+    return bridged / reindex
+
+
+def _misaligned(row: dict[str, Any], metric: str) -> float | None:
+    """The naive swap's retention, under whichever convention made it definable."""
+    for configuration in ("naive_swap", "naive_swap_padded"):
+        value = _metric(row, configuration, metric)
+        reindex = _metric(row, "full_reindex", metric)
+        if value is not None and reindex:
+            return value / reindex
+    return None
+
+
+#: The walk from the published protocol to rebasis' own, one change per step.
+#: Each pair differs in exactly one thing, which is what makes the size of the
+#: step attributable to that thing.
+PROTOCOL_STEPS = (
+    ("published", "recall", "published", "ndcg", "the metric, at the published protocol"),
+    ("published", "recall", "hybrid", "recall", "the query distribution"),
+    ("hybrid", "recall", "t1-judged", "recall", "the ground truth"),
+    ("t1-judged", "recall", "t1-judged", "ndcg", "the metric, at rebasis' protocol"),
+)
+
+
+def walk_tags(present: list[str]) -> dict[str, str]:
+    """Which three tags the decomposition walks between.
+
+    The walk needs one `t0-knn` column and one `t0-knn-real-queries` column at
+    the **same** ground-truth depth, or a step would move two things at once and
+    stop being attributable. The deepest available depth is chosen, because that
+    is the one the published protocol is being read as.
+    """
+    deepest = [tag for tag in present if base_protocol(tag) == "t0-knn"]
+    if not deepest:
+        return {}
+    published = deepest[0]
+    depth = published.partition("@")[2]
+    hybrid = f"t0-knn-real-queries@{depth}"
+    chosen = {"published": published, "t1-judged": "t1-judged"}
+    if hybrid in present:
+        chosen["hybrid"] = hybrid
+    return chosen
+
+
+def _protocol_table(
+    runs: list[tuple[str, str, str]],
+    indexed: dict[tuple[str, str, str, str], dict[str, Any]],
+    present: list[str],
+    *,
+    k: int,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    """The per-run table, and the runs that every protocol measured.
+
+    Only the complete runs feed the means underneath. A step is a difference,
+    and a difference taken over two different sets of runs is not one.
+    """
+    header = ["corpus", "rung"]
+    for name in present:
+        header += [f"{name} R@{k}", f"{name} nDCG@{k}"]
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+
+    complete: list[tuple[str, str, str]] = []
+    for run in runs:
+        values = [
+            _retention(indexed[name, *run], f"{metric}@{k}") if (name, *run) in indexed else None
+            for name in present
+            for metric in ("recall", "ndcg")
+        ]
+        lines.append(
+            "| "
+            + " | ".join(
+                [corpus_label(run[0]), f"{short(run[1])}→{short(run[2])}"]
+                + ["—" if value is None else f"{value:.3f}" for value in values]
+            )
+            + " |"
+        )
+        if all(value is not None for value in values):
+            complete.append(run)
+    return lines, complete
+
+
+def protocol_view(rows: list[dict[str, Any]], *, k: int) -> str:
+    """One line per run, one column per protocol, and the delta itemised.
+
+    The columns are retention — bridged over a full reindex — because that is
+    the one quantity all three protocols define, and because under a kNN ground
+    truth it is exactly the ARR a published result reports.
+
+    The summary underneath walks from the published protocol to rebasis' own one
+    change at a time. Each step moves exactly one thing, so the size of each step
+    is what that thing is worth.
+    """
+    present = tag_order({protocol_of(row) for row in rows})
+    if len(present) < 2:  # noqa: PLR2004 - a comparison needs two protocols
+        return f"only one protocol in these rows ({present or ['none']})"
+    walk = walk_tags(present)
+
+    indexed: dict[tuple[str, str, str, str], dict[str, Any]] = {
+        (protocol_of(row), row["corpus"], row["old_model"], row["new_model"]): row for row in rows
+    }
+    runs = sorted({key[1:] for key in indexed})
+    lines, complete = _protocol_table(runs, indexed, present, k=k)
+
+    mean: dict[tuple[str, str], float] = {}
+    for name in present:
+        for metric in ("recall", "ndcg"):
+            values = [_retention(indexed[name, *run], f"{metric}@{k}") for run in complete]
+            if values:
+                mean[name, metric] = float(np.mean(values))
+
+    counted = (
+        f"retention, mean over the {len(complete)} runs measured under all "
+        f"{len(present)} protocols:"
+    )
+    lines += ["", counted, ""]
+    lines += [
+        f"  {name + ' ' + metric + '@' + str(k):34s} {value:.3f}"
+        for (name, metric), value in mean.items()
+    ]
+
+    lines += ["", f"what each step is worth (walking {walk.get('published', '?')} -> t1-judged):"]
+    lines += [
+        f"  {what:38s} {mean[walk[to_role], to_metric] - mean[walk[from_role], from_metric]:+.3f}"
+        for from_role, from_metric, to_role, to_metric, what in PROTOCOL_STEPS
+        if from_role in walk
+        and to_role in walk
+        and (walk[from_role], from_metric) in mean
+        and (walk[to_role], to_metric) in mean
+    ]
+
+    lines += ["", f"the misaligned baseline, as a share of a full reindex, nDCG@{k}:"]
+    for name in present:
+        values = [
+            value
+            for row in rows
+            if protocol_of(row) == name
+            if (value := _misaligned(row, f"ndcg@{k}")) is not None
+        ]
+        if values:
+            lines.append(f"  {name:34s} {np.mean(values):.3f} over {len(values)} runs")
+
+    # The ceiling only exists where the ground truth is a set of documents, so
+    # it appears under the kNN protocols and nowhere else. It is the number that
+    # says whether a low retention is the adapter's fault or the old space's.
+    lines += ["", f"what the old space could hold at all, recall@{k}:"]
+    for name in present:
+        values = [
+            value
+            for row in rows
+            if protocol_of(row) == name
+            if (value := _metric(row, "ceiling_old_space", f"recall@{k}")) is not None
+        ]
+        if values:
+            bridged = [
+                value
+                for row in rows
+                if protocol_of(row) == name
+                if (value := _metric(row, "bridged", f"recall@{k}")) is not None
+            ]
+            lines.append(
+                f"  {name:34s} ceiling {np.mean(values):.3f}  "
+                f"bridged {np.mean(bridged):.3f}  over {len(values)} runs"
+            )
+    return "\n".join(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rows", type=Path, help="The .jsonl the harness wrote")
     parser.add_argument(
-        "--view", default="summary", choices=("band", "cascade", "geometry", "summary")
+        "--view", default="summary", choices=("band", "cascade", "geometry", "summary", "protocol")
     )
     parser.add_argument("--k", type=int, default=10, help="Cut-off for the band view")
     parser.add_argument("--metric", default="ndcg", choices=("ndcg", "recall", "mrr"))
     parser.add_argument(
         "--rung", default=None, help="Only runs whose new model ends with this string"
+    )
+    parser.add_argument(
+        "--protocol",
+        default="t1-judged",
+        help=(
+            "Which protocol's rows the single-protocol views read. The `protocol` "
+            "view always reads all of them, because comparing them is what it is for"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -290,6 +535,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows = [r for r in rows if r["new_model"].endswith(args.rung)]
     if not rows:
         print("no rows", file=sys.stderr)
+        return 1
+
+    if args.view == "protocol":
+        print(protocol_view(rows, k=args.k))
+        return 0
+
+    # Matches either the full tag or the bare protocol name, so `--protocol
+    # t0-knn` selects every depth and `--protocol t0-knn@10` selects one.
+    rows = [
+        row for row in rows if args.protocol in {protocol_of(row), base_protocol(protocol_of(row))}
+    ]
+    if not rows:
+        print(f"no {args.protocol} rows", file=sys.stderr)
         return 1
 
     cutoffs = sorted({k for row in rows for k in row.get("cutoffs", [])})

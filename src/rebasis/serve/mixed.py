@@ -93,6 +93,54 @@ _LOOKUP_CHUNK = 900
 PROGRESS_TTL_SECONDS = 5.0
 
 
+def _check_one_width(store: VectorStore, bridge: Bridge) -> None:
+    """Refuse a mixed index whose two halves are not the same width.
+
+    This arrangement sends the **raw** new-model query at the store, alongside
+    the bridged one, and keeps the half each is right about. That only makes
+    sense if a raw query fits the index at all — so the adapter has to map a
+    width onto itself, ``input_dim == output_dim``, and both have to equal the
+    index's.
+
+    It is not an arbitrary restriction, and refusing here is not conservatism.
+    A partial migration that changed the width would leave two vector widths in
+    one collection: every store that declares ``dimension_locked`` rejects the
+    second one outright, and a store that does not would hold a collection no
+    single query can search. There is no version of a half-migrated index with
+    two widths that this class could serve — the arrangement is impossible
+    before it is unsupported.
+
+    Checked at construction rather than at the first query, because the first
+    query is a serving path and a caller who installed this at start-up should
+    find out then.
+
+    Raises:
+        EmbeddingDimensionMismatch: When the three widths are not one width.
+    """
+    try:
+        index = store.dimension()
+    except Exception:  # noqa: BLE001 - an empty or unreadable index is not this check's business
+        return
+    if bridge.input_dim == bridge.output_dim == index:
+        return
+
+    from rebasis.errors import EmbeddingDimensionMismatch
+
+    raise EmbeddingDimensionMismatch(
+        f"A half-migrated index has to hold one width. The adapter maps "
+        f"{bridge.input_dim} to {bridge.output_dim} and the index is {index}.",
+        hint=(
+            "This arrangement sends the unmapped new-model query at the index "
+            "beside the bridged one, so the new model's width has to be the "
+            "index's. Where the widths differ there is no half-migrated index "
+            "to serve: the store rejects the second width, or holds a "
+            "collection no single query can search. Finish the migration, or "
+            "roll it back, and serve one space."
+        ),
+        context={"dim": index},
+    )
+
+
 class MixedSpaceSearch:
     """Search an index that a migration has left holding two spaces.
 
@@ -134,6 +182,7 @@ class MixedSpaceSearch:
         self._store = store
         self._bridge = bridge
         self._job_id = job_id
+        _check_one_width(store, bridge)
         directory = default_state_dir() if state_dir is None else _as_path(state_dir)
         self._db = ManifestDB(manifest_path(directory))
         self._last_over_fetch = 1.0

@@ -73,9 +73,15 @@ everything around it, because the alignment is the easy part.
 - **It measures against your queries, on your corpus.** Not a benchmark average.
   A real query log is what makes the answer yours; without one the tool says the
   result is provisional rather than guessing.
-- **It rewrites indexes safely when you are ready.** Shadow copy before every
-  batch, read-back after, a fresh-connection check when the queue empties,
-  `rollback` to the originals. Five backends, on every commit.
+- **It can rewrite the index too, and it says what that is worth.** Shadow copy
+  before every batch, read-back after, a fresh-connection check when the queue
+  empties, `rollback` to the originals, five backends on every commit. The
+  direction matters and nothing but the manifest records it: `migrate` needs a
+  map *out* of the index's space, `Bridge` needs the map *into* it, and handing
+  over the wrong one passes every guard while destroying the index. `fit` writes
+  either; `migrate` refuses the wrong one. Measured, a completed migration is
+  worth about what bridging is worth — which is usually not much. See
+  [Status](#status-01).
 - **It knows a half-migrated index is a broken one.** A migration stopped
   part-way leaves two embedding spaces in one collection, and no ordinary query
   is correct against both. rebasis detects that, says so unprompted, and can
@@ -91,17 +97,31 @@ separating:
 The Python API, the `.rbs` adapter format and the decision thresholds may all
 move before 1.0. Breaking changes go in the changelog with the reason.
 
-**`migrate` writes to your index.** It is the one command that does. It is
-covered by tests against every supported backend on every commit, it copies each
-batch before it overwrites it, it verifies the write on a fresh connection when
-it finishes, it measures whether the index can still *find* what it wrote, and
-`rollback` restores the originals from a bit-identical shadow copy — exactly,
-unless your store rewrites what it is given, and then to within its own float32
-round trip. But nobody has yet run it against an index they could not rebuild.
-Until somebody has: take a backup that rebasis is not part of, and try `--limit`
-on a slice first —
+**`migrate` writes to your index, and every run before this release wrote an
+index no query could answer.** It was applying the adapter the wrong way round:
+`fit` produced a map from the new model's space into the index — what a *query*
+needs — and `migrate` rewrites the *documents*, which needs the reverse. Every
+guard it had passed. The write landed, the count held, the text survived, the
+read-back compared what was written against what came back, and the index health
+check measured the store's search against exact kNN over the vectors it now
+held. None of those asks whether the vectors still mean anything. Measured on
+data where both spaces are known exactly and the bridge itself scores 1.000: the
+index a completed migration left behind answered **recall@1 0.000** to a raw
+new-model query, a bridged query and an old-model query alike.
+
+Two things changed. `fit --direction old_to_new` produces the map `migrate`
+actually needs, fitted and scored on the question a migration asks — what a
+*raw* new-model query retrieves from a rewritten index. And `migrate` reads the
+direction out of the adapter's manifest and refuses the other one before it
+opens the store. `rollback` is untouched and still restores from the shadow
+copy, which is the path out for anyone who ran a migration before this.
+
+**What is still withheld is the evidence, not the code.** Nobody has yet run
+`migrate` against an index they could not rebuild. Until somebody has: take a
+backup rebasis is not part of, and try `--limit` on a slice first —
 [knowing what that leaves behind](https://batuhanzorbeyzengin.github.io/rebasis/guides/migration/#stopping-short-leaves-two-spaces-in-one-index).
-Everything else — `probe`, `fit`, `eval` — only reads.
+
+Everything else — `probe`, `fit`, `eval` — only reads, and always did.
 
 ---
 
@@ -128,21 +148,41 @@ rebasis fit --store chroma:///path/to/db#notes \
   --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
   --method auto --pairs 4000 --out adapters/minilm-to-bge.rbs
 
-# 3. Optional: rewrite the index in the background, a batch at a time.
-#    --dry-run prints the plan and stops, which is the first thing to run.
-#    --limit stops short on purpose; migrate and status both say what that
-#    leaves behind, and MixedSpaceSearch serves it correctly meanwhile.
-rebasis migrate --adapter adapters/minilm-to-bge.rbs \
+# 3. Serve through the bridge. The index is never touched.
+
+# 4. Optional: rewrite the index so the new model can query it directly.
+#    This needs the *other* direction — a map out of the index rather than into
+#    it — and `fit` produces one on request. `--dry-run` prints the plan first.
+rebasis fit --store chroma:///path/to/db#notes \
+  --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
+  --direction old_to_new --out adapters/forward.rbs
+
+rebasis migrate --adapter adapters/forward.rbs \
   --store chroma:///path/to/db#notes --priority access --limit 5000
+
+# Stop it at a batch boundary; pick it up where it stopped.
+rebasis pause <job-id>
+rebasis resume <job-id>
 
 # Undo it, from the shadow copy.
 rebasis rollback <job-id>
 ```
 
-`probe` and `fit` print the command to run next. `migrate` shows an `X of Y` bar
-and resumes with `rebasis migrate --resume <job-id>` and nothing else.
-`rebasis doctor` lists the backends, embedders and devices it can see — run it
-first when anything is confusing.
+**Measured, migrating is worth about as much as bridging and usually worth
+less than neither.** A completed migration delivers a mean **0.727** of a full
+reindex across 51 runs on real corpora with human judgements — against 0.719 for
+bridging, tracking it at Spearman 0.993. It beat leaving the index alone in
+**5 of those 51**. What it buys is the adapter leaving the query path; what it
+costs is rewriting every vector. It does not buy retrieval quality
+([the numbers](docs/migration-band.md)).
+
+`probe` and `fit` print the command to run next.
+`rebasis doctor` lists the backends, embedders and devices it can see, and with
+`--store <uri>` it asks the same questions of a live index: does it open, what
+does it declare it can do, is its SQLite file intact, and — the one that
+explains a quality collapse nothing else explains — is it holding two embedding
+spaces at once. Read-only in every path. Run it first when anything is
+confusing.
 
 ### In a script
 
@@ -177,8 +217,15 @@ bridge_advantage = ARR × upgrade_gain
 
 — how much of a full reindex the adapter recovers, times how much better the new
 model is *on your corpus*. Above 1.0 bridging beats leaving things alone. It has
-been right **61 times out of 62**, including 32 of 33 on corpora it was frozen
-before it ever saw.
+**That count was an identity, and it has been withdrawn.** Read off one run's own
+scores, `ARR × upgrade_gain` is `(bridged/reindex) × (reindex/status quo)` —
+which is `bridged/status quo`, the same inequality as the outcome it was being
+scored against. It agreed 57 times out of 57 on the runs still on disk because it
+could not do otherwise. What survives a proper test is narrower and positive: the
+estimate ranks runs by the margin they actually returned at **Spearman ρ = 0.60,
+p ≈ 1e-6**, so it carries real information about how much bridging will cost or
+buy — but it does not support being read as a threshold at the accuracy that
+count implied. [The workings](docs/bridge-band.md#9-what-the-counting-is-worth).
 
 Neither factor settles it alone, and they pull against each other: a big upgrade
 means the old model was weak, and a weak source space carries less for the
@@ -256,9 +303,14 @@ rather than halfway through.
 
 ### Not there yet
 
-**LangChain** and **LlamaIndex** vector stores have adapters written and
-**no tests** — they duck-type a foreign object, which is the code most likely to
-break quietly on a dependency bump. **usearch** has not been started. A bridge
+**LangChain** and **LlamaIndex** vector stores are bridged and now tested — a
+contract suite of duck-typed fakes, one per capability the bridge has to infer,
+plus a layer that drives the frameworks' own in-memory stores where they are
+installed. Writing it found both bridges declaring capabilities they could not
+deliver, and the LangChain bridge no longer passes a similarity score through at
+all: LangChain guarantees nothing about whether a higher number means closer,
+and several stores flip on a constructor argument. **usearch** has not been
+started. A bridge
 adapter reaches dozens of stores for the cost of one file, but those interfaces
 do not expose `iter_records(with_vectors=True)` and `upsert_vectors` uniformly,
 so a bridged store declares honestly restricted capabilities: `probe` and the
@@ -276,9 +328,14 @@ Using the tool without knowing what it cannot do costs more than not using it.
 
 - **It does not fix hard drift.** Between very different architectures an adapter
   is not enough. The tool says so rather than hiding it.
-- **It needs paired data.** If you can no longer run the old model — weights
-  lost, API shut down — no adapter can be fitted, and a full reindex is the only
-  option left.
+- **It needs the index to hand back vectors *and* text.** The pairs an adapter
+  is fitted on are the index's own vectors on one side and the same documents
+  re-embedded with the candidate model on the other, so **the old model is never
+  run** — `fit` does not load it. What losing the old model costs is the
+  *decision*: without it a real query log cannot be encoded the way the current
+  system encodes it, so there is no `upgrade_gain`, and the run is reported as
+  provisional. The case no adapter survives is an index that kept vectors and
+  discarded the text they came from.
 - **It does not fix chunking changes.** Different chunk boundaries are corpus
   drift, not embedding drift. Different problem.
 - **Fixed similarity thresholds break.** If you filter on `similarity > 0.7`,
@@ -336,6 +393,15 @@ reference.
   squeeze turns out to be much weaker
 - [`docs/index-health.md`](docs/index-health.md) — what a migration does to the
   index, on two graph backends and five adapters
+- [`docs/mixed-space-fusion.md`](docs/mixed-space-fusion.md) — which of the two
+  merges to use while an index holds two spaces, and the case where the answer
+  reverses
+- [`docs/vs-drift-adapter.md`](docs/vs-drift-adapter.md) — the same three
+  adapters against a published result: what reproduced, what did not, and what
+  would change the conclusion
+- [`docs/related-work.md`](docs/related-work.md) — where this sits in the
+  literature, and which neighbouring approaches a user of this tool
+  structurally cannot take
 - [`docs/adr/`](docs/adr/) — the decisions that would otherwise be re-argued,
   and the measurement behind each
 - [`docs/m0-findings.md`](docs/m0-findings.md) — 84 configurations measured

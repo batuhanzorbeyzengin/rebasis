@@ -1,0 +1,218 @@
+# What every arXiv identifier in this repository is, according to whoever cited it.
+#
+# `tools/check_citations.py` reads this file. On every pull request it checks,
+# without touching the network, that this manifest and the documentation name the
+# same set of papers. Weekly it asks arXiv whether the titles below are the ones
+# those identifiers actually carry.
+#
+# The file exists because one of them was not. `docs/cascade-band.md` cited
+# 2605.24297 for a claim about rerankers; that identifier is a benchmark of patent
+# embedding models and says nothing about rerankers at all. The paper meant was
+# 2411.11767. A bare identifier beside a sentence carries nothing a reader can
+# check without opening it, so nobody opened it.
+#
+# ── adding a citation ─────────────────────────────────────────────────
+#
+#   1. Cite the paper wherever you are writing.
+#   2. Add an entry here, keyed by the bare identifier with no version suffix.
+#   3. Copy the title FROM ARXIV, not from your own sentence. Copying your own
+#      sentence reproduces whatever you already believed, which is exactly how
+#      the wrong identifier survived review.
+#
+# ── the fields ────────────────────────────────────────────────────────
+#
+#   title    Required. The one field arXiv can contradict, and therefore the
+#            entire mechanism.
+#   authors  Optional. Surnames, comma-separated; each must appear among the
+#            authors arXiv lists. Worth recording because this repository cites
+#            by name — "Maystre et al.", "Jacob et al." — and a name is a claim
+#            about a paper's identity exactly as a title is.
+#   why      Required, free text, never checked by anything but a reviewer. A
+#            tool cannot tell whether a paper supports the sentence it is
+#            attached to; a reviewer can, but only if the claim is written down
+#            beside the identifier. Say what the paper is cited FOR, not where —
+#            the check computes the where, so it cannot go stale.
+
+[papers."1805.11222"]
+title = "Unsupervised Alignment of Embeddings with Wasserstein Procrustes"
+authors = "Grave, Joulin, Berthet"
+why = """
+The first step toward unpaired alignment on the roadmap: it optimises the
+correspondence and the orthogonal map together, so fitting an adapter needs no
+dictionary of paired vectors.
+"""
+
+[papers."2407.07871"]
+title = """
+Enhancing HNSW Index for Real-Time Updates: Addressing Unreachable Points and \
+Performance Degradation"""
+authors = "Xiao, Zhan, Xi, Hou, Liao"
+why = """
+The general case behind the index damage this project measures: unreachable
+points and search degradation in an HNSW graph under update.
+"""
+
+[papers."2411.11767"]
+title = "Drowning in Documents: Consequences of Scaling Reranker Inference"
+authors = "Jacob, Lindgren, Zaharia, Carbin, Khattab, Drozdov"
+why = """
+The published counter-example that made the cascade arrangement worth measuring
+rather than assuming: scoring progressively more documents with an off-the-shelf
+reranker helps a strong first stage and then degrades it past a point.
+"""
+
+[papers."2505.12540"]
+title = "Harnessing the Universal Geometry of Embeddings"
+authors = "Jha, Zhang, Shmatikov, Morris"
+why = """
+vec2vec. The adversarial and cycle-consistency route to unpaired alignment, kept
+on the roadmap behind Wasserstein Procrustes because it is a great deal of
+machinery for a tool that runs on a laptop.
+"""
+
+[papers."2507.19802"]
+title = "CleANN: Efficient Full Dynamism in Graph-based Approximate Nearest Neighbor Search"
+authors = "Zhang, Wei, Engels, Shun"
+why = """
+Cited beside 2407.07871 for the same general case: full dynamism in a
+graph-based index, which is the failure the index-health check looks for.
+"""
+
+[papers."2509.23471"]
+title = """
+Drift-Adapter: A Practical Approach to Near Zero-Downtime Embedding Model \
+Upgrades in Vector Databases"""
+authors = "Vejendla"
+why = """
+The closest published prior art, and the reason `tools/bridge_band.py` carries a
+model pair and three corpora it would not otherwise have: holding both fixed
+against the paper's own choices is what makes this harness's numbers comparable
+with the ones it reports.
+"""
+
+[papers."2510.13406"]
+title = "When Embedding Models Meet: Procrustes Bounds and Applications"
+authors = "Maystre, Ortega Gonzalez, Park, Dolga, Berariu, Zhao, Ciosek"
+why = """
+Three separate things. Corollary 1 is the alignment bound `probe` reports before
+any adapter is fitted. Appendix B.3 is the counter-example behind ADR 1's
+refusal to claim that centring on its own brings two spaces closer. Figure 4 is
+the cross-model retrieval grid the MMTEB runs are read against.
+"""
+
+[papers."2605.24297"]
+title = """
+Benchmarking Patent Embeddings: A Multi-Task Evaluation of 22 Models Across \
+Retrieval, Classification, and Clustering"""
+authors = "Yousefiramandi, Cooney"
+why = """
+Nothing is claimed from it. This is the worked example inside
+`tools/check_citations.py`: the identifier was cited for a claim about rerankers
+and it is a patent embedding benchmark. Recorded so that the check verifies its
+own example rather than asserting it.
+"""
+[papers."2003.11942"]
+title = "Towards Backward-Compatible Representation Learning"
+authors = "Shen, Xiong, Xia, Soatto"
+why = """
+BCT, the origin of the compatible-representation family. It removes the need to
+backfill by constraining how the *new* model is trained — which is the boundary
+`docs/related-work.md` exists to draw, because a user on a vendor's embedding
+API has no training run to constrain.
+"""
+
+[papers."2112.02805"]
+title = "Forward Compatible Training for Large-Scale Embedding Retrieval Systems"
+authors = "Ramanujan, Vasu, Farhadi, Tuzel, Pouransari"
+why = """
+FCT, and the one member of that family that does not require retraining the new
+model — it requires a per-item auxiliary feature stored when the old index was
+built, which is worse for a rebasis user: unlike a training run, it cannot be
+obtained after the fact.
+"""
+
+[papers."2204.13919"]
+title = """
+Privacy-Preserving Model Upgrades with Bidirectional Compatible Training in \
+Image Retrieval"""
+authors = "Su, Zhang, Ge, Xu, Wang, Yuan, Shan"
+why = """
+BiCT. Cited for the case it is built around and rebasis cannot serve at all: a
+gallery that kept its vectors and discarded the originals, so nothing can be
+re-embedded.
+"""
+
+[papers."2209.15430"]
+title = "Relative representations enable zero-shot latent space communication"
+authors = "Moschella, Maiorca, Fumero, Norelli, Locatello, Rodolà"
+why = """
+The representation mini-vec2vec's matching step is built on: describing a vector
+by its similarities to a set of anchors rather than by its coordinates, so two
+spaces become comparable without a map between them.
+"""
+
+[papers."2301.03767"]
+title = "Metric Compatible Training for Online Backfilling in Large-Scale Retrieval"
+authors = "Seo, Uzunbas, Han, Cao, Lim"
+why = """
+The academic analogue of `serve.MixedSpaceSearch`: query both spaces during a
+partial migration and merge by distance. Cited component by component, because
+its rank merge needs nothing a rebasis user lacks while its metric-compatible
+contrastive learning needs class labels over the corpus.
+"""
+
+[papers."2308.06948"]
+title = "MixBCT: Towards Self-Adapting Backward-Compatible Training"
+authors = "Liang, Zhang, Zhang, Wang, Xiao, Xiao, Wang"
+why = """
+The later BCT variant, cited to show the family kept improving along an axis
+that stays closed to this tool: every step of it is a change to how the new
+model is trained.
+"""
+
+[papers."2405.07987"]
+title = "The Platonic Representation Hypothesis"
+authors = "Huh, Cheung, Wang, Isola"
+why = """
+The standing conjecture about why any of this works: that models trained on
+different data and objectives converge toward a shared representation of the
+world. Cited as the conjecture it is, not as a result rebasis relies on.
+"""
+
+[papers."2510.02348"]
+title = "mini-vec2vec: Scaling Universal Geometry Alignment with Linear Transformations"
+authors = "Dar"
+why = """
+The unpaired-alignment candidate the roadmap did not have when it was written:
+the same orthogonal-solve-plus-assignment shape, with the assignment moved off
+the data points onto k-means centroids, on a CPU. Also the source of the
+reported finding that optimal-transport methods failed to beat a naive baseline
+on sentence embeddings in vec2vec's own oracle setup.
+"""
+
+[papers."2605.16608"]
+title = """
+To MRL or not to MRL: Text Embeddings are Robust to Truncation Without \
+Matryoshka Learning, Except In Heavy Truncation Scenarios"""
+authors = "Takeshita, Takeshita, Ponzetto, Ruffinelli"
+why = """
+Cited in `spikes/truncate_candidate.py` for the reason the Matryoshka shortcut
+looked worth measuring at all: truncation is reported to hold up on models never
+trained for it, until the reduction is heavy. The spike measured it in this
+tool's setting and found the opposite, and the reason is that the paper truncates
+within one model's own space while a bridge truncates across two — so the paper
+is why the question was asked, not evidence for either answer.
+"""
+
+[papers."2503.21073"]
+title = "Shared Global and Local Geometry of Language Model Embeddings"
+authors = "Lee, Weber, Viégas, Wattenberg"
+why = """
+Cited in the roadmap's per-cluster entry, as a pointer rather than a result. It
+reports that local neighbourhood geometry is shared across models much as global
+geometry is, and builds a single global linear map on that basis instead of
+region-specific ones — which is the direction this project's own `tail_arr`
+survey points, from the other end. It studies token embeddings in language
+models, not document embeddings in retrieval models, and the roadmap says so
+where it cites it.
+"""

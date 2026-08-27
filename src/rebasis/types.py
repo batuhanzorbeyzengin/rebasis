@@ -164,6 +164,33 @@ class StoreCapabilities:
     #: real recall in the index while every vector in it is correct, and this is
     #: the capability that decides whether that is recoverable.
     can_rebuild_index: bool = False
+    #: Whether this store keeps the vectors in a form narrower than the float32
+    #: it was handed, so that reading one back returns a **reconstruction** of
+    #: what was written rather than what was written.
+    #:
+    #: Three states, and the third is the whole point. ``can_rebuild_index``
+    #: next door defaults to ``False`` because there the safe answer and the
+    #: false-y answer are the same one: a backend that declines to rebuild is
+    #: declining to offer a repair, and offering none costs nothing. Here they
+    #: point in opposite directions. ``False`` asserts *what you write is what
+    #: you read back*, which is the promise `rollback` rests on — so a backend
+    #: that answered ``False`` because it never looked would have made a
+    #: guarantee it cannot keep, which is the exact failure this whole
+    #: declaration exists to prevent.
+    #:
+    #: ``None`` is therefore the default and means "not determinable": the
+    #: store was not asked, could not answer, or is a third-party store behind a
+    #: bridge that exposes nothing to ask. It is not a finding, and nothing
+    #: warns on it — it is the absence of one.
+    #:
+    #: This is about **storage**, not about search. A store may hold compressed
+    #: codes for its index and the untouched vectors beside them; that is not
+    #: this field. Qdrant is the case in point and its documentation draws the
+    #: line itself: "Quantization creates a separate quantized representation of
+    #: vectors alongside the original ones, while datatypes determine the
+    #: representation of the original vectors themselves"
+    #: (`qdrant.tech/documentation/concepts/vectors/`).
+    quantized: bool | None = None
     name: str = ""
 
 

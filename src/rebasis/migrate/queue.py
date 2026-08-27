@@ -23,9 +23,11 @@ from rebasis.migrate.states import ItemState, JobState
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
+    import numpy as np
+
     from rebasis.manifest import ManifestDB
 
-__all__ = ["JobQueue", "QueueStats"]
+__all__ = ["JobQueue", "QueueStats", "clear_pause_request", "pause_requested", "request_pause"]
 
 
 @dataclass(slots=True)
@@ -168,6 +170,56 @@ class JobQueue:
             yield [str(row["record_id"]) for row in rows]
             offset += len(rows)
 
+    def sample_pending(self, size: int, rng: np.random.Generator) -> list[str]:
+        """A uniform sample of the records still to be migrated.
+
+        Uniform over what is *left*, not over the queue's head. A refit fitted
+        on the highest-priority records still pending would be fitted on a
+        slice of a slice — and what it is about to be applied to is the whole
+        remainder.
+
+        Reservoir sampling over a streamed scan rather than ``ORDER BY
+        RANDOM()``: SQLite's ``RANDOM()`` cannot be seeded, and a migration that
+        made a different decision on a re-run of the same job would not be
+        reproducible from the audit trail. One pass of record ids, and only when
+        a refit is due — every 50,000 records by default, against a scan of a
+        column that is already indexed.
+        """
+        reservoir: list[str] = []
+        seen = 0
+        for chunk in self._iter_pending():
+            for record_id in chunk:
+                if len(reservoir) < size:
+                    reservoir.append(record_id)
+                else:
+                    position = int(rng.integers(0, seen + 1))
+                    if position < size:
+                        reservoir[position] = record_id
+                seen += 1
+        return reservoir
+
+    def _iter_pending(self, batch_size: int = 1000) -> Iterator[list[str]]:
+        """Stream the records still to be migrated, in a stable order.
+
+        ``SHADOWED`` counts as pending for the same reason ``next_batch`` takes
+        it: a record whose original was copied but whose write never landed is
+        still carrying its old vector.
+        """
+        offset = 0
+        while True:
+            rows = self.db.query(
+                """
+                SELECT record_id FROM job_items
+                WHERE job_id = ? AND state IN (?, ?)
+                ORDER BY record_id LIMIT ? OFFSET ?
+                """,
+                (self.job_id, ItemState.PENDING, ItemState.SHADOWED, batch_size, offset),
+            )
+            if not rows:
+                return
+            yield [str(row["record_id"]) for row in rows]
+            offset += len(rows)
+
 
 def set_job_state(
     db: ManifestDB, job_id: str, state: JobState, *, error_code: str | None = None
@@ -178,6 +230,65 @@ def set_job_state(
             "UPDATE jobs SET state = ?, updated_utc = ?, error_code = ? WHERE job_id = ?",
             (state, _now(), error_code, job_id),
         )
+
+
+# ── pause requests ───────────────────────────────────────────────────────────
+#
+# A request is not a state, and keeping them apart is what makes this safe to
+# write from a second process.
+#
+# `state` says where the job *is*, and the engine is the only thing that knows:
+# between `rebasis pause` returning and the current batch finishing, the job is
+# still RUNNING and writing PAUSED from outside would claim a stop that has not
+# happened. Worse, both processes would then be writing one column — and the
+# engine's own `_finish` would overwrite whatever the other wrote.
+#
+# So this is a separate column with one writer and one reader in each direction:
+# the CLI sets it, the engine reads it, the engine clears it. `status` reads it
+# too, because a job that has been asked to stop and has not stopped yet is a
+# thing a user needs to be able to see.
+
+
+def request_pause(db: ManifestDB, job_id: str) -> bool:
+    """Ask a running job to stop after its current batch.
+
+    Guarded on ``state = 'running'`` in the statement rather than checked first,
+    so a job that finishes between the check and the write is not left carrying
+    a request nothing will ever read. Returns whether the request was recorded;
+    ``False`` means the job does not exist or is not running, and the caller has
+    the row it needs to say which.
+    """
+    with db.transaction() as connection:
+        cursor = connection.execute(
+            "UPDATE jobs SET pause_requested = 1, updated_utc = ? WHERE job_id = ? AND state = ?",
+            (_now(), job_id, JobState.RUNNING),
+        )
+        return cursor.rowcount > 0
+
+
+def clear_pause_request(db: ManifestDB, job_id: str) -> None:
+    """Forget a pause request, so a resumed job does not stop immediately.
+
+    Called by the engine as it starts, not by whatever asked it to start: a
+    request that outlived the run it was meant for would pause the next one, and
+    the engine is the only place that knows a run has actually begun.
+    """
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE jobs SET pause_requested = 0, updated_utc = ? WHERE job_id = ?",
+            (_now(), job_id),
+        )
+
+
+def pause_requested(db: ManifestDB, job_id: str) -> bool:
+    """Whether someone has asked this job to stop.
+
+    Read once per batch, so it is a primary-key lookup and nothing more. A job
+    row that has gone missing reads as no request: the engine's business is to
+    finish, and a vanished row is not an instruction to stop.
+    """
+    row = db.query_one("SELECT pause_requested FROM jobs WHERE job_id = ?", (job_id,))
+    return bool(row["pause_requested"]) if row is not None else False
 
 
 def _now() -> str:

@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-import numpy as np  # noqa: TC002 - runtime annotation on a slotted dataclass
+import numpy as np
 
 from rebasis.core import (
     ScoreCalibrator,
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
     from rebasis.core.geometry import GeometryBound
     from rebasis.core.selection import AdapterCandidate
+    from rebasis.probe.migration import MigrationFit
     from rebasis.types import FloatArray
 
 __all__ = ["CandidateMetrics", "ProbeResult", "evaluate_candidate", "run_probe"]
@@ -153,6 +154,11 @@ class ProbeResult:
     #: What this run cost. Written to the report and the audit record so
     #: "it got slower" becomes a fact rather than a feeling.
     resources: dict[str, Any] = field(default_factory=dict)
+    #: Whether the query proxies were drawn weighted by an access log. It
+    #: changes what ARR *estimates* — retention on the questions people send,
+    #: rather than on a uniform draw over the corpus — so a report that did not
+    #: carry it would be two different numbers under one name.
+    access_weighted: bool = False
     #: What a full reindex would cost, extrapolated from this run's own
     #: measured embedding rate.
     reindex_cost: dict[str, Any] = field(default_factory=dict)
@@ -160,6 +166,15 @@ class ProbeResult:
     #: alignment error that bounds. Computed before any adapter is fitted, from
     #: one Gram-matrix difference — see `rebasis.core.geometry`.
     geometry: GeometryBound | None = None
+    #: The `old_to_new` map, where one was asked for. Absent by default: it is a
+    #: second fit over the same pairs and most runs do not need it, because most
+    #: runs are deciding whether to *bridge* rather than how to migrate.
+    #:
+    #: A separate field rather than a second entry in `candidates`, because it is
+    #: a different quantity scored on a different question — `probe/migration.py`
+    #: has the reasoning — and putting the two in one list would invite a reader
+    #: to compare numbers that do not compare.
+    migration: MigrationFit | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialisable form, for the report and the audit record."""
@@ -168,7 +183,9 @@ class ProbeResult:
             "best_adapter": self.best.to_dict(),
             "candidates": [c.to_dict() for c in self.candidates],
             "baselines": {k: round(v, 4) for k, v in self.baselines.items()},
+            **({"migration": self.migration.to_dict()} if self.migration is not None else {}),
             "tier": self.ground_truth_tier,
+            "access_weighted": self.access_weighted,
             "n_documents": self.n_documents,
             "n_queries": self.n_queries,
             "n_fit_pairs": self.n_fit_pairs,
@@ -597,6 +614,61 @@ def _oracle_recall_at(
     return recall_at_k(indices, ground_truth.relevant_sparse, cascade_k)
 
 
+def _reachable_ceiling(
+    old_doc_vectors: FloatArray,
+    ground_truth: GroundTruth,
+    k: int,
+) -> float | None:
+    """The best score **any** query-side map could reach in this index.
+
+    **Nothing a user can run produces this number.** It is not an adapter and not
+    a result: it is what a query would score if it already knew which documents
+    it was supposed to retrieve. It is here to bound the row above it, and quoted
+    on its own it would be a claim about a system nobody can build.
+
+    The construction: for each query, take its relevant documents' vectors *as
+    the old index holds them* and use their normalised mean as the query. Among
+    unit vectors that is exactly the one maximising summed similarity to the
+    target set, so it estimates the best a single query point can do against
+    those documents in that space.
+
+    **Why it earns its place.** `arr` says how much of a reindex the adapter
+    recovered; it cannot say whether more was available. This separates the two
+    questions a low `arr` leaves open — *the adapter is weak* against *the old
+    space does not hold these neighbourhoods, and no adapter of any family will
+    find them there*. Measured over 144 runs, the ceiling ranks runs by their
+    eventual retention at Spearman 0.90; the pre-fit geometry bound in
+    `core/geometry.py`, which is cheaper still, manages −0.30. Where `arr` sits
+    far below this, a better adapter is worth looking for. Where this is itself
+    low, [ADR 10](../adr/0010-retention-is-bounded-by-the-source.md) is the
+    reading and a reindex is the answer.
+
+    It bounds by estimate rather than by proof: the centroid maximises *summed
+    similarity* to the target set, not membership count in the top ``k``, so a
+    contrived arrangement could beat it. The slack in that relaxation is small
+    next to the gaps it is used to explain.
+
+    Returns ``None`` where every query has a single relevant document. There the
+    centroid *is* that document, it retrieves itself, and the ceiling is 1.0 by
+    construction — a number with no information in it, which is worse than none.
+    """
+    sizes = {len(relevant) for relevant in ground_truth.relevant if relevant}
+    if not sizes or sizes == {1}:
+        return None
+
+    targets = np.empty((len(ground_truth.relevant), old_doc_vectors.shape[1]), dtype=np.float32)
+    for position, relevant in enumerate(ground_truth.relevant):
+        rows = sorted(relevant)
+        targets[position] = old_doc_vectors[rows].mean(axis=0) if rows else 0.0
+    indices, _ = top_k_search(
+        l2_normalize(targets, copy=False),
+        old_doc_vectors,
+        k=k,
+        self_mask=ground_truth.self_mask,
+    )
+    return float(recall_at_k(indices, ground_truth.relevant_sparse, k))
+
+
 def _baselines(
     *,
     old_doc_vectors: FloatArray,
@@ -605,10 +677,12 @@ def _baselines(
     ground_truth: GroundTruth,
     k: int,
 ) -> dict[str, float]:
-    """The two comparisons that make ARR interpretable.
+    """The comparisons that make ARR interpretable.
 
     An absolute ARR means little on its own. What a user needs is: how much worse
-    is doing nothing, and how bad would it be to skip the adapter entirely.
+    is doing nothing, how bad would it be to skip the adapter entirely, and — the
+    one that says whether a better adapter is even available — how much of this
+    index's own geometry any query-side map could have reached.
     """
     oracle = ground_truth.oracle_recall or 1.0
     baselines: dict[str, float] = {}
@@ -619,8 +693,19 @@ def _baselines(
     baselines["old_model_only"] = recall_at_k(old_indices, ground_truth.relevant_sparse, k) / oracle
     baselines["old_model_only_ndcg"] = ndcg_at_k(old_indices, ground_truth.relevant_sparse, k)
 
-    # Only meaningful when the dimensions match; otherwise the new vector cannot
-    # physically enter the old index at all.
+    # Only where the dimensions match, and this gate is deliberate rather than a
+    # limitation to be lifted. `old_model_only` above is the "do nothing" number
+    # and is always computed; this one is "swap the model and change nothing
+    # else", which at different widths is not a worse option — it is not an
+    # option. A 384-dimensional query cannot enter a 256-dimensional index; the
+    # store raises rather than returning a poor ranking.
+    #
+    # It could be *made* to happen by zero-padding the narrower side, and that
+    # was measured rather than argued about: on AG-News with all-MiniLM-L6-v2 →
+    # all-mpnet-base-v2, a padded swap recovers 0.0001 — one query in ten
+    # thousand finding one document in ten. Reporting that as a baseline would
+    # put a number in the user's table for a configuration they cannot run, next
+    # to numbers for configurations they can.
     if new_query_vectors.shape[1] == old_doc_vectors.shape[1]:
         naive_indices, _ = top_k_search(
             new_query_vectors, old_doc_vectors, k=k, self_mask=ground_truth.self_mask
@@ -628,6 +713,10 @@ def _baselines(
         baselines["unadapted"] = (
             recall_at_k(naive_indices, ground_truth.relevant_sparse, k) / oracle
         )
+
+    ceiling = _reachable_ceiling(old_doc_vectors, ground_truth, k)
+    if ceiling is not None:
+        baselines["reachable_ceiling"] = ceiling / oracle
 
     return baselines
 

@@ -223,6 +223,19 @@ def _headline_numbers(result: ProbeResult) -> list[str]:
                 f"queries: {result.n_queries:,} · "
                 f"fit pairs: {result.n_fit_pairs:,}"
             ),
+            *(
+                [
+                    (
+                        "- Queries drawn **weighted by an access log**, so the "
+                        "numbers above describe retention on the questions people "
+                        "send rather than on a uniform draw over the corpus. Those "
+                        "are different quantities and this one is usually the "
+                        "higher of the two."
+                    )
+                ]
+                if result.access_weighted
+                else []
+            ),
             "",
         ]
     )
@@ -331,7 +344,24 @@ def _baselines(result: ProbeResult) -> list[str]:
             f"| New model, no adapter | {result.baselines['unadapted']:.3f} | "
             "Feed new vectors straight into the old index |"
         )
+    if "reachable_ceiling" in result.baselines:
+        lines.append(
+            f"| *Ceiling — nothing reaches this* | *{result.baselines['reachable_ceiling']:.3f}* | "
+            "*The best any query-side map could do in this index* |"
+        )
     lines.append("")
+    if "reachable_ceiling" in result.baselines:
+        gap = result.baselines["reachable_ceiling"] - result.best.arr
+        lines.extend(
+            [
+                (
+                    f"The ceiling is what a query would score if it already knew the answer, "
+                    f"so no adapter can pass it — it is here to say whether a better one is "
+                    f"available. This adapter sits **{gap:+.3f}** from it."
+                ),
+                "",
+            ]
+        )
     return lines
 
 

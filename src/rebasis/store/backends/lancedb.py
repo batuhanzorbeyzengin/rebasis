@@ -41,6 +41,10 @@ _VECTOR_COLUMNS = ("vector", "embedding", "embeddings", "vec")
 _ID_COLUMNS = ("id", "_id", "doc_id", "pk")
 _TEXT_COLUMNS = ("text", "content", "document", "page_content")
 
+#: Width of the dtype rebasis reads and writes in. A column narrower than this
+#: cannot hold what it is given; a wider one loses nothing.
+_FLOAT32_BITS = 32
+
 
 class LanceDBStore:
     """A LanceDB table."""
@@ -58,6 +62,10 @@ class LanceDBStore:
         self._id_column = id_column
         self._text_column = text_column
         self._dimension: int | None = None
+        # Two attributes rather than one, because ``None`` is a real answer
+        # here — "the schema did not say" — and not a "not looked yet".
+        self._quantized: bool | None = None
+        self._quantization_checked = False
 
     @classmethod
     def from_uri(cls, uri: StoreURI, **kwargs: Any) -> LanceDBStore:
@@ -112,8 +120,40 @@ class LanceDBStore:
             can_filter=True,
             dimension_locked=False,
             supports_in_place_update=True,
+            quantized=self._column_is_narrower_than_float32(),
             name="lancedb",
         )
+
+    def _column_is_narrower_than_float32(self) -> bool | None:
+        """Whether the vector *column* stores something narrower than float32.
+
+        The column, deliberately, and not the index — which is where LanceDB's
+        quantization actually lives and where it is easiest to look in the wrong
+        place. ``IVF_PQ`` and its relatives build a compressed copy in
+        index-internal columns (``__pq_code``, ``__sq_code``); the user's vector
+        column is untouched, which is why ``bypass_vector_index`` is documented
+        as giving "ground truth results … to calculate your recall"
+        (`lancedb/query.py`, 0.37.1). This backend reads with a plain
+        ``search().select(...).to_arrow()`` and no ``nearest_to``, so it reads
+        that column and never the codes. An IVF_PQ index therefore costs a
+        LanceDB migration nothing in fidelity, and reporting it here would fire
+        a warning about a round trip that is exact.
+
+        What does change the round trip is the column's own Arrow type. LanceDB
+        infers ``fixed_size_list<uint8>`` for an all-integer list column in
+        ``[0, 255]`` (``lancedb/table.py``, 0.37.1) — binary and ``uint8``
+        embeddings are a real and supported thing to store — and float32 written
+        into that comes back rounded.
+
+        Read as a bit width rather than by name: ``value_type`` is a pyarrow
+        type, pyarrow is LanceDB's dependency and not rebasis', and a width is
+        the property being asked about anyway. ``None`` when the schema does not
+        answer — an unknown, not a finding.
+        """
+        if not self._quantization_checked:
+            self._quantized = _narrower_than_float32(self._table, self._vector_column)
+            self._quantization_checked = True
+        return self._quantized
 
     def count(self) -> int:
         """Number of rows in the table."""
@@ -278,6 +318,26 @@ def _pick(columns: list[str], candidates: tuple[str, ...], kind: str, uri: Store
         ),
         context={"store_backend": "lancedb"},
     )
+
+
+def _narrower_than_float32(table: Any, column: str) -> bool | None:
+    """Whether ``column``'s element type holds fewer than 32 bits per component.
+
+    Everything here is duck-typed off pyarrow objects rather than imported from
+    pyarrow, which is LanceDB's dependency and not rebasis'. A vector column is
+    a ``fixed_size_list``, so the element type is ``.value_type`` and its width
+    is ``.bit_width``; anything that does not answer both leaves the question
+    open rather than being resolved to a guess.
+
+    Checked against lancedb 0.13.0 and 0.37.1, whose ``Table.schema`` is a
+    pyarrow ``Schema`` in both.
+    """
+    try:
+        value_type = table.schema.field(column).type.value_type
+        bits = int(value_type.bit_width)
+    except Exception:  # noqa: BLE001 - a schema that does not answer is an unknown, not a failure
+        return None
+    return bits < _FLOAT32_BITS
 
 
 def _table_names(connection: Any) -> list[str]:

@@ -138,8 +138,24 @@ class DecisionResult:
         against ``old_model_arr``, stated as one figure because two numbers a
         reader has to divide in their head is not a number they will use.
 
-        Measured across 14 corpus/model pairs, its sign predicted whether
-        bridging beat doing nothing in **14 of 14** (`docs/bridge-band.md`).
+        **The count this docstring used to quote was an identity.** Read off one
+        run's own scores, ``ARR x upgrade_gain`` is ``(bridged / reindex) x
+        (reindex / status quo)``, which is ``bridged / status quo`` — the same
+        inequality as "did bridging beat doing nothing". Scored that way it
+        agrees always, and "14 of 14" measured nothing.
+
+        What is measured, over the 57 runs `reports/band/` still holds: the
+        estimate ranks runs by the margin they actually returned at **Spearman
+        rho = 0.60, p ~ 1e-6**, so it carries real information about the *size*
+        of the effect. Scored as a threshold against the outcome it agrees in
+        37 of 57, below the 54 of 57 a rule that always answered "do not bridge"
+        would score — because 95% of those outcomes fall on one side, and an
+        accuracy cannot separate a real rule from a constant there
+        (`docs/bridge-band.md`, section 9).
+
+        The quantity is still what decides, and the bands are still where they
+        were: what changed is the confidence a reader should take from the
+        count, not the rule.
         """
         if self.upgrade_gain is None:
             return None

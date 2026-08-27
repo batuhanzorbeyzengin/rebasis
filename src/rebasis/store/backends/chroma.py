@@ -98,6 +98,25 @@ class ChromaStore:
             # `query_to_old` makes that irrelevant.
             dimension_locked=True,
             supports_in_place_update=True,
+            # A hard False, not a shrug, and checked rather than assumed
+            # against both ends of the supported range — chromadb 0.5.23 and
+            # 1.5.9. There is one storage encoding for a dense vector and it is
+            # float32: `ScalarEncoding` has exactly two members, FLOAT32 and
+            # INT32 (`chromadb/types.py`), the write boundary is
+            # `np.array(vector, dtype=np.float32).tobytes()` and the read
+            # boundary `np.frombuffer(vector, dtype=np.float32)`
+            # (`chromadb/ingest/__init__.py`), and the index underneath is
+            # hnswlib, which holds raw floats. No collection setting reaches
+            # it: the whole configurable surface is `space`, `ef_construction`,
+            # `ef_search`, `max_neighbors`, threading and batching.
+            #
+            # 1.x does carry a quantization concept — a 4-bit RaBitQ bound to
+            # the SPANN index — and it is unreachable from here twice over: it
+            # is a per-tenant server-side flag, and the bundled 1.5.9 binary
+            # refuses to build a SPANN index locally at all. This backend opens
+            # a `PersistentClient` and nothing else, so a Chroma collection
+            # rebasis can see is a float32 one.
+            quantized=False,
             name="chroma",
         )
 

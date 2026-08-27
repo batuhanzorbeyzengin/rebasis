@@ -339,9 +339,17 @@ ignore = [
 "tests/*" = ["D", "ANN", "PLR2004", "SLF001", "INP001", "PLC0415"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# Direct `open(..., "w")` is banned outside storage/atomic.py.
 # ENOSPC while overwriting in place leaves the old content deleted and the new
 # content unwritten — atomic_write removes that failure mode entirely.
+#
+# The wider rule this comment used to state — that direct `open(..., "w")` is
+# banned outside storage/atomic.py — is not expressible here: ruff's banned-api
+# bans an imported name, and `open` is a builtin whose *mode argument* is what
+# makes it destructive. It is enforced instead by
+# `tests/unit/test_write_discipline.py`, which walks the AST of every module
+# under src/ and carries the allowlist. This entry covers the one part that does
+# fit: `os.rename` is not atomic across a rename onto an existing file on
+# Windows, so nothing may reach for it directly.
 "os.rename".msg = "Use os.replace (atomic on POSIX and Windows) via rebasis.storage.atomic"
 
 [tool.ruff.lint.isort]
@@ -483,6 +491,18 @@ filterwarnings = [
     # floor instead would withdraw the 0.5.5 support the README claims, over a
     # warning in someone else's code.
     "ignore::DeprecationWarning:chromadb.*",
+    # typer up to 0.25 does `from click.utils import get_binary_stream`, and
+    # click 8.5.0 turned that name into a deprecated alias. The floor job is the
+    # only place the two meet: the lock resolves typer 0.27.1, which dropped the
+    # import, and every other job installs from the lock. Measured — 0.16
+    # through 0.25 warn, 0.26.0 is the first that does not.
+    #
+    # Raising the floor to 0.26 instead would withdraw support for ten typer
+    # releases over a warning in someone else's code, and the warning is exactly
+    # that: typer 0.16 runs correctly, it is only this project's
+    # `error::DeprecationWarning` policy that turns the notice into a failure.
+    # Same reasoning as the chromadb line above.
+    "ignore::DeprecationWarning:typer.*",
 ]
 
 # ── coverage ─────────────────────────────────────────────────────────

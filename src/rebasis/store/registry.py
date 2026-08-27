@@ -100,7 +100,37 @@ def open_store(uri: str | StoreURI, **kwargs: Any) -> VectorStore:
     log.info(
         Events.STORE_OPENED,
         store_backend=parsed.backend,
-        count=store.count(),
-        dim=store.dimension(),
+        count=_countable(store),
+        dim=_measurable(store),
     )
     return store
+
+
+def _countable(store: VectorStore) -> int:
+    """The row count, or ``0`` when the backend cannot say."""
+    try:
+        return store.count()
+    except Exception:  # noqa: BLE001 - a log line must not decide whether a store opens
+        return 0
+
+
+def _measurable(store: VectorStore) -> int:
+    """The dimensionality, or ``0`` when the backend cannot say.
+
+    Two real cases reach this, and in both of them refusing to answer is
+    correct and failing to open is not.
+
+    An **empty** collection has no row to measure, and sqlite-vec's backend
+    raises rather than guessing. A **bit** vec0 column packs one bit per
+    component and ``bit[7]`` is a legal declaration, so the dimension is not
+    recoverable from the data at all.
+
+    Either way this is a log line. `rebasis doctor --store` exists to report
+    what can be read about an index somebody is already confused by, and a
+    diagnostic that cannot open the thing it is diagnosing — because a field in
+    an informational event could not be filled in — is the opposite of useful.
+    """
+    try:
+        return store.dimension()
+    except Exception:  # noqa: BLE001 - a log line must not decide whether a store opens
+        return 0

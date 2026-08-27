@@ -78,6 +78,7 @@ class Events(StrEnum):
     MIGRATE_BATCH_COMPLETED = "migrate.batch.completed"
     MIGRATE_BATCH_THROTTLED = "migrate.batch.throttled"
     MIGRATE_ITEM_FAILED = "migrate.item.failed"
+    MIGRATE_PAUSE_REQUESTED = "migrate.pause.requested"
     MIGRATE_JOB_PAUSED = "migrate.job.paused"
     MIGRATE_JOB_RESUMED = "migrate.job.resumed"
     MIGRATE_JOB_COMPLETED = "migrate.job.completed"
@@ -298,6 +299,12 @@ EVENT_CATALOG: dict[Events, EventSpec] = {
         ("job_id", "record_id", "error_code"),
         audited=False,
         description="A single record failed.",
+    ),
+    Events.MIGRATE_PAUSE_REQUESTED: EventSpec(
+        _I,
+        ("job_id", "state"),
+        audited=True,
+        description="Someone asked a running job to stop after its current batch.",
     ),
     Events.MIGRATE_JOB_PAUSED: EventSpec(
         _W,

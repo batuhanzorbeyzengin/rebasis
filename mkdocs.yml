@@ -29,6 +29,9 @@ exclude_docs: |
   design/
   # Fragment instructions, not a page.
   ../changelog.d/
+  # The citation manifest is input to `tools/check_citations.py`, not a page.
+  # Left in, mkdocs copies it into the site as a static asset at /citations.toml.
+  citations.toml
 
 theme:
   name: material
@@ -105,6 +108,7 @@ nav:
       - What drift is: concepts/drift.md
       - Adapters: concepts/adapters.md
       - The decision rule: concepts/decision-rule.md
+  - Related work: related-work.md
   - Guides:
       - Chroma: guides/chroma.md
       - LanceDB: guides/lancedb.md
@@ -123,6 +127,13 @@ nav:
       - When bridging is worth it: bridge-band.md
       - The bridge as a recall stage: cascade-band.md
       - What a migration does to the index: index-health.md
+      - Merging two spaces during a migration: mixed-space-fusion.md
+      - What a completed migration is worth: migration-band.md
+      - Refitting during a migration: continuous-refit.md
+      - What a float16 shadow gives up: shadow-precision.md
+      - Chaining adapters: chained-adapters.md
+      - Weighting a probe by what is read: access-weighting.md
+      - Against a published result: vs-drift-adapter.md
   - Development:
       - Setup: development/setup.md
       - Testing: development/testing.md
