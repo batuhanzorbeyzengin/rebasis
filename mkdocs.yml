@@ -101,6 +101,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Stability and support: stability.md
   # The roadmap lives at the repository root, where GitHub surfaces it.
   # Linked rather than copied: two files saying the same thing drift.
   - Roadmap: https://github.com/batuhanzorbeyzengin/rebasis/blob/main/ROADMAP.md
@@ -112,7 +113,11 @@ nav:
   - Guides:
       - Chroma: guides/chroma.md
       - LanceDB: guides/lancedb.md
+      - Qdrant: guides/qdrant.md
+      - sqlite-vec: guides/sqlite-vec.md
+      - FAISS: guides/faiss.md
       - Migration and rollback: guides/migration.md
+      - Running it in production: guides/operations.md
       - LangChain and LlamaIndex: guides/langchain.md
   - Reference:
       - CLI: reference/cli.md
