@@ -132,9 +132,56 @@ no version file to rewrite — this project has none, because `hatch-vcs` derive
 the package version from the tag itself.
 
 Then it pushes, rebuilds at the tagged version — the earlier build predates the
-tag, so its version is wrong — and publishes through Trusted Publishing. No API
+tag, so its version is wrong — and publishes through Trusted Publishing. No PyPI
 token exists to leak, and since `pypa/gh-action-pypi-publish` v1.11.0 the
 published files carry a PEP 740 attestation with no further configuration.
+
+### The push to `main` is made by a GitHub App
+
+`main` is protected by a ruleset: a change reaches it through a pull request with
+the CI checks green. The release commit is the exception the rule cannot make for
+itself, because **a ruleset cannot exempt `GITHUB_TOKEN`.** Bypass is granted to
+repository roles, to deploy keys and to *installed* GitHub Apps;
+`github-actions[bot]` is a first-party integration and appears in none of those
+lists. A ruleset that names it is rejected at import with "contains an invalid
+actor".
+
+So the `release` job mints a token from a GitHub App installed on this
+repository, and `actions/checkout` keeps it, which is what `git push` then uses.
+The App is what the ruleset's bypass list names.
+
+Two repository secrets carry it:
+
+| secret | what it is |
+|---|---|
+| `RELEASE_APP_ID` | the App's numeric id |
+| `RELEASE_APP_PRIVATE_KEY` | the whole `.pem`, `BEGIN`/`END` lines included |
+
+The job checks both are set before it does anything else, so a missing one fails
+with a sentence naming this page rather than with `Input required and not
+supplied: app-id` from inside an action.
+
+**Why an App and not a personal access token.** A PAT would have been one secret
+instead of two and no App to create. It would also be a standing credential
+carrying every permission its scopes allow, on every repository the account can
+reach, until somebody remembers to rotate it. The App is scoped to
+`contents: write` on this repository alone, and the token it mints expires with
+the run — the same property that makes Trusted Publishing worth the setup on the
+PyPI side.
+
+**Setting it up again**, if the App is ever lost:
+
+1. Settings → Developer settings → GitHub Apps → **New GitHub App**. Homepage URL
+   can be the repository. Uncheck **Webhook → Active**.
+2. Repository permissions: **Contents: Read and write**. Nothing else.
+3. Create it, note the **App ID**, generate a private key.
+4. Install the App on this repository only.
+5. Add the two secrets above.
+6. In the `main` ruleset, add a bypass: **Bypass list → Add bypass →** the App.
+
+Step 6 is the one that is easy to forget, and skipping it produces a release that
+fails at the last irreversible-but-one step, with the push rejected by the very
+rule this arrangement exists to satisfy.
 
 ## Before a release, on the host
 
