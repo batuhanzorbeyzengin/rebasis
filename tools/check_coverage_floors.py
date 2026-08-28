@@ -28,6 +28,14 @@ FLOORS: dict[str, int] = {
     # exercises is a branch nobody trusts.
     "src/rebasis/audit/chain.py": 100,
     "src/rebasis/compute/numpy_backend.py": 90,
+    # These two write and restore the bytes a rollback depends on. ROADMAP.md
+    # named 95 and 100 as their targets and neither was a floor here, so the two
+    # modules were held only by the `storage/` package floor of 80 — a target
+    # stated in prose and enforced nowhere is not a target. 90 is a ratchet, not
+    # the goal: it is under the measured 93.5% and 93.3% so it cannot go red on
+    # arrival, and it stops either one sliding back while the goal is unmet.
+    "src/rebasis/storage/shadow.py": 90,
+    "src/rebasis/storage/atomic.py": 90,
 }
 
 #: Package floors, summed over their files.

@@ -251,6 +251,14 @@ A10G, where it previously collected 0.
 **Generalisation:** a marker-selected CI job that reports success is
 indistinguishable from one that ran nothing. Worth asserting the count.
 
+**Since corrected, one level up.** This section calls that workflow "nightly"
+because that is what it was written to be. It is not: the file is not in the
+repository, so GitHub has never run it, and a `schedule:` trigger only fires
+from the default branch. The marker fix above is real and re-measured — `-m gpu`
+still collects 4 on the A10G — but it is a marker fix for a run somebody starts,
+not for one that happens overnight. See
+[testing](development/testing.md#what-a-clone-cannot-run).
+
 ---
 
 ## 8. What these measurements do not establish

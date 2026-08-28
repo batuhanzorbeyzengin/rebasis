@@ -1,0 +1,5 @@
+Two error codes existed in the package and in no documentation.
+
+`RB-E1004` (`MalformedQueryLog`, raised when a `--queries` file will not parse as JSONL) and `RB-E6005` (`WritesDidNotSurvive`, raised when a store accepts every write and a fresh connection cannot see them) were both missing from `rebasis.errors.__all__`. That list is what `report.catalog` walks to generate `docs/reference/errors.md`, so neither code had a row on the page its own error panel links to — and a user hitting either one had a code, a hint, and nowhere to read further.
+
+The list is also what `tests/unit/test_errors.py` walks, which is why nothing went red. Every check in that file — the code format, the uniqueness of codes, the catalogue covering them — read `__all__`, and the one test that could have caught the omission asserted `len(ERROR_CLASSES) > 20`, the list counted against itself. It now checks the other direction, as the event catalogue has always done: every `RebasisError` subclass **defined** in the module must be exported. Both codes are in the catalogue, and forty-three of forty-three are accounted for.

@@ -46,10 +46,12 @@ K = 10
 def _device_params() -> list[pytest.ParameterSet]:
     """One parameter per available device, accelerators marked ``gpu``.
 
-    The marker is what puts these in the nightly run on the project's own host.
-    Without it the accelerator cases would exist only in the default suite,
-    which on a laptop or a free CI runner means they never execute — and a
-    device-parity suite that never sees a second device is not one.
+    The marker is what puts these in the run on the project's own host. Without
+    it the accelerator cases would exist only in the default suite, which on a
+    laptop or a free CI runner means they never execute — and a device-parity
+    suite that never sees a second device is not one. That run is started by
+    hand: nothing schedules it, so the marker decides what somebody gets when
+    they ask for it, not what happens overnight.
     """
     params = []
     for device in available_devices():

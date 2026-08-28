@@ -16,8 +16,8 @@ wall clock, which a shared runner cannot measure — so it does not.
 | `test_hot_path.py`, the allocation half | `memory` | every PR | absolute — exceeding blocks |
 | `test_memory_ceiling.py`, all but one | `memory` | every PR | absolute — exceeding blocks |
 | `test_memory_ceiling.py`, the time curve | `perf` | GPU host | super-linear only, 4x tolerance |
-| `test_macro_budgets.py` | `slow`, `perf` | nightly, GPU host | 120% of the performance budget |
-| `tests/golden/` | `slow` | nightly, GPU host | decisions exact, ARR within a band |
+| `test_macro_budgets.py` | `slow`, `perf` | GPU host, by hand | 120% of the performance budget |
+| `tests/golden/` | `slow` | GPU host, by hand | decisions exact, ARR within a band |
 
 Wall-clock benchmarks never block a PR. On a shared runner a wall-clock gate
 needs a 7% threshold just to hold false positives at 1%, and a 7% gate hides
@@ -31,6 +31,13 @@ false.** Both files carried `perf`, CI runs `-m "not perf"`, and so the ceilings
 gated nothing while this table went on saying they gated every pull request. The
 two markers exist to keep the sentence true: excluding the noisy half no longer
 excludes the deterministic half with it.
+
+**"By hand" is the second correction to this table, and it is the same
+mistake.** The two `slow` rows said "nightly" — the workflow that would have
+made that true drives the GPU host through `scripts/`, neither is in a clone, so
+it was never committed and GitHub has never run it. A `schedule:` trigger only
+fires from the default branch; a file that is not on it fires never. Nothing
+schedules this layer. Somebody runs it, or it does not run.
 
 Locally: `just gate` runs what CI gates on, `just bench` runs the wall-clock
 layer. Neither is in the default `just test` loop.

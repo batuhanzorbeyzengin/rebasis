@@ -313,22 +313,33 @@ shape:
   migrations yet, deliberately — the first migration is the worst possible time
   to design the migration machinery.
 - **Full coverage on the modules where a bug costs data.** `audit/chain.py` is
-  there (100%). `storage/shadow.py` is at 93.5% against a target of 95, and
-  `storage/atomic.py` at 92.5% against 100. Overall coverage is 81.8% against a
-  floor of 75, enforced in CI, where `tools/check_coverage_floors.py` also
-  checks the per-module targets against the finished report.
-- **More than one operating system in CI.** Linux is the only one today. The
-  macOS leg was added and then removed: `faiss-cpu` and `torch` each link their
-  own OpenMP runtime there, and a process holding both aborts before either
-  library does any work ([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
-  [pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). That is
-  the wrong thing to have lost, because the storage layer is exactly where the
+  there (100%), as are `errors.py`, `types.py` and `observability/redaction.py`.
+  `storage/shadow.py` is at 93.5% against a target of 95 and `storage/atomic.py`
+  at 93.3% against 100. Neither number was enforced anywhere until now — this
+  entry named both targets while `tools/check_coverage_floors.py` held
+  the two modules only through the `src/rebasis/storage/` package floor of 80, a
+  bar they clear together at 90.6%. They now carry a floor of their own at 90:
+  a ratchet against sliding back, not the goal, which is still the 95 and the
+  100 above. Overall coverage is 84.9% against a floor of 75, enforced by
+  `fail_under` in CI.
+- **More than one operating system in CI.** ~~Linux is the only one today.~~
+  **Partly closed.** The macOS leg was added to the full suite and then removed:
+  `faiss-cpu` and `torch` each link their own OpenMP runtime there, and a process
+  holding both aborts before either library does any work
+  ([faiss-wheels#40](https://github.com/kyamagu/faiss-wheels/issues/40),
+  [pytorch#149201](https://github.com/pytorch/pytorch/issues/149201)). What was
+  lost with it was coverage of the storage layer, which is exactly where the
   platforms differ — directory fsync, `os.replace`, a system sqlite3 that cannot
-  load extensions — and it is also where a bug costs data. A narrower leg that
-  runs `storage/` and `manifest/` without either library would clear the
-  conflict; nothing has been written yet. macOS is the maintainer's own platform
-  and the suite runs there, which is a person rather than a gate. Windows has
-  documented behaviour in the storage layer that nothing exercises at all.
+  load extensions — and exactly where a bug costs data. The narrower leg this
+  entry asked for now exists: `core install` installs no extras, so neither
+  library is present and the conflict cannot arise, and it runs
+  `unit or property or contract` on `ubuntu-latest` and `macos-latest` both.
+  That is the storage layer covered: `atomic`, `shadow` and the manifest schema
+  are all `unit`, so all three now run on the second platform. **What it does
+  not cover is a real backend on macOS.** A core-only install has none, so the
+  five live stores `importorskip` out of the contract suite there and only
+  `memory` runs, and `integration` and `e2e` are not selected at all. Windows
+  has documented behaviour in the storage layer that nothing exercises at all.
 - **A decision rule that has not moved for a release.** It changed twice on
   evidence and then held across 33 held-out runs. One more release without a
   change and the thresholds can be called settled.

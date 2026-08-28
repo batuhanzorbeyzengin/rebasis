@@ -5,7 +5,17 @@
 # carries it, and hatch-vcs derives the package version from the tag — so nothing
 # is edited by hand and nothing can disagree.
 #
-# Publishing uses Trusted Publishing: no API token exists to leak.
+# Publishing uses Trusted Publishing: no PyPI token exists to leak.
+#
+# The one long-lived secret this workflow does need is a GitHub App private key,
+# and only the `release` job uses it. A ruleset protecting `main` cannot exempt
+# `GITHUB_TOKEN` — bypass is granted to repository roles, deploy keys and
+# *installed* GitHub Apps, and `github-actions[bot]` is a first-party
+# integration that appears in none of those lists — so the one step that writes
+# to `main`, the changelog commit and its tag, runs as an App that can. The App
+# is scoped to `contents: write` on this repository and the token it mints
+# expires with the run; a personal access token would have been the shortcut and
+# would have been a standing credential with far more reach.
 #
 # ── Three modes, and what each one costs if it goes wrong ────────────────────
 #
@@ -269,10 +279,33 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - name: the release App is configured
+        # Checked before anything else, and by name. Without it the run dies
+        # inside the token action with "Input required and not supplied:
+        # app-id", which says nothing about what to go and do. This is the one
+        # step in the workflow whose failure has a setup instruction rather than
+        # a bug behind it.
+        env:
+          APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not set. The changelog commit is pushed to a protected \`main\` as a GitHub App, because a ruleset cannot exempt GITHUB_TOKEN. See docs/development/release.md."
+            exit 1
+          fi
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: release-app
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # `persist-credentials` defaults to true, so `git push` below reuses
+          # this token without the push step having to name it. That is the
+          # whole mechanism: the push is authenticated as the App, and the App
+          # is what the ruleset's bypass list can name.
+          token: ${{ steps.release-app.outputs.token }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -363,9 +396,9 @@ jobs:
             "sbom/rebasis-${{ steps.version.outputs.next }}.cdx.json"
       - name: publish
         # Trusted Publishing — the token is minted for this run and expires
-        # with it. There is no long-lived secret to leak. The action has produced
-        # a PEP 740 attestation by default since v1.11.0, so the published files
-        # carry one without further configuration.
+        # with it. No long-lived PyPI credential exists to leak. The action has
+        # produced a PEP 740 attestation by default since v1.11.0, so the
+        # published files carry one without further configuration.
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
       - name: the release notes
         run: |

@@ -57,13 +57,25 @@ which accepts distributions only.
 | Weekly | `pip-audit` over the resolved tree with every extra, and an OpenSSF Scorecard run |
 | Continuously | Dependabot, grouped by blast radius |
 
-**Two Scorecard checks this project cannot pass, stated rather than worked
+**One Scorecard check this project cannot pass, stated rather than worked
 around.** *Code-Review* counts pull requests reviewed by somebody other than
-their author; there is one maintainer, so it is low by construction. *Branch
-Protection* is not enabled on `main`, because the release workflow pushes the
-changelog commit and the tag there — a protection rule has to be written to
-allow that before it can be turned on. Neither is a score that improves by
-configuring something; both improve only by the project having more people.
+their author; there is one maintainer, so it is low by construction. It does not
+improve by configuring something — only by the project having more people.
+
+*Branch Protection* used to be listed here beside it, and no longer belongs
+there. It was not a check that could not pass; it was one blocked by a
+mechanism. The release workflow pushes the changelog commit and its tag to
+`main`, and it pushed them as `github-actions[bot]` — an identity **no ruleset
+can exempt**, because bypass is granted to repository roles, deploy keys and
+installed GitHub Apps, and a first-party integration is none of those. Any rule
+strong enough to be worth having would have broken every release.
+
+That push is now made by a GitHub App installed on this repository, scoped to
+`contents: write` and minting a token that expires with the run, and an App is
+something a ruleset's bypass list can name. Protecting `main` is therefore a
+repository setting rather than a code change: a ruleset requiring a pull request
+with the CI checks green, with the App bypassing that one push and nothing else.
+[How the App is set up](https://batuhanzorbeyzengin.github.io/rebasis/development/release/#the-push-to-main-is-made-by-a-github-app).
 
 ## What rebasis guarantees
 
@@ -106,14 +118,19 @@ upstream**, so neither is closed by an upgrade. Both were assessed against how
 rebasis actually uses them rather than dismissed, and the reasoning is here so a
 reviewer does not have to repeat it.
 
+**Identifiers are given as GHSA first**, because that is what a Dependabot alert
+shows and matching an alert to a row here should not require a lookup. The PYSEC
+alias follows where one exists, since that is the spelling `pip-audit` prints for
+the same advisory.
+
 **chromadb — four advisories, none reachable through rebasis.**
 
-| | |
-|---|---|
-| [PYSEC-2026-311](https://osv.dev/PYSEC-2026-311) | Pre-authentication code injection via the `/api/v2/tenants/{tenant}/databases/{db}/collections` endpoint |
-| [GHSA-36p7-vc44-83pf](https://osv.dev/GHSA-36p7-vc44-83pf) | Authenticated code injection via the collection-update endpoint |
-| [GHSA-2wm9-hf6c-p5cr](https://osv.dev/GHSA-2wm9-hf6c-p5cr) | Missing authorisation validation across tenants |
-| [GHSA-xph7-9rjv-w5fr](https://osv.dev/GHSA-xph7-9rjv-w5fr) | `SimpleRBACAuthorizationProvider` ignores which tenant a permission applies to |
+| Advisory | Also known as | What it is |
+|---|---|---|
+| [GHSA-f4j7-r4q5-qw2c](https://osv.dev/GHSA-f4j7-r4q5-qw2c) | PYSEC-2026-311, CVE-2026-45829 | Pre-authentication code injection via the `/api/v2/tenants/{tenant}/databases/{db}/collections` endpoint |
+| [GHSA-36p7-vc44-83pf](https://osv.dev/GHSA-36p7-vc44-83pf) | CVE-2026-45833 | Authenticated code injection via the collection-update endpoint |
+| [GHSA-2wm9-hf6c-p5cr](https://osv.dev/GHSA-2wm9-hf6c-p5cr) | CVE-2026-45830 | Missing authorisation validation across tenants |
+| [GHSA-xph7-9rjv-w5fr](https://osv.dev/GHSA-xph7-9rjv-w5fr) | CVE-2026-45831 | `SimpleRBACAuthorizationProvider` ignores which tenant a permission applies to |
 
 All four are properties of the **Chroma server** — its HTTP API, its
 authentication and its authorisation providers. rebasis opens
@@ -125,7 +142,8 @@ That is a statement about rebasis, not about your deployment. **If you run a
 Chroma server, these advisories apply to it** and rebasis is not what protects
 you from them.
 
-**diskcache — [PYSEC-2026-2447](https://osv.dev/PYSEC-2026-2447), unsafe pickle
+**diskcache — [GHSA-w8v5-vhqr-4h9v](https://osv.dev/GHSA-w8v5-vhqr-4h9v)
+(PYSEC-2026-2447, CVE-2025-69872), unsafe pickle
 deserialization.** It arrives through `llama-cpp-python`, an optional extra
 deliberately left out of `rebasis[all]` because it compiles from source. The
 attack requires write access to the cache directory, which is already local

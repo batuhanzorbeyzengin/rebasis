@@ -19,6 +19,7 @@ exception is ``--include-samples``, which the user asks for explicitly.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -305,7 +306,11 @@ def _geometry(result: ProbeResult) -> list[str]:
     measurement is the answer; this says what the geometry permitted.
     """
     geometry = result.geometry
-    if geometry is None or geometry.n_pairs == 0 or geometry.delta != geometry.delta:
+    # `math.isnan`, not `delta != delta`. The idiom is correct and it is also
+    # the one thing in this file a reader has to decode rather than read; a
+    # static analyser flagged it as a comparison of identical values, which is
+    # exactly how it looks to somebody who does not already know the trick.
+    if geometry is None or geometry.n_pairs == 0 or math.isnan(geometry.delta):
         return []
     return [
         "### What the geometry allowed",

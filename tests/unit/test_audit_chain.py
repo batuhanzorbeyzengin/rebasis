@@ -54,7 +54,13 @@ def test_only_audited_events_produce_records(writer: AuditWriter, db: ManifestDB
     assert is_audited(Events.PROBE_DECISION_MADE)
     assert not is_audited(Events.EMBED_BATCH_COMPLETED)
 
-    assert writer.write(Events.EMBED_BATCH_COMPLETED, inputs={}, outputs={}) is None
+    # The write is a statement, not an assertion. Inside `assert` it disappears
+    # under `python -O`, and the count below would then pass for the wrong
+    # reason: nothing was written because nothing ran, rather than because the
+    # event is not audited.
+    written = writer.write(Events.EMBED_BATCH_COMPLETED, inputs={}, outputs={})
+
+    assert written is None
     assert AuditReader(db).count() == 0
 
 
