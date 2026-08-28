@@ -66,7 +66,7 @@ Three layers:
    asserted *not* to track N. This is the guard on the architecture's central
    invariant.
 3. **Macro benchmarks** — end-to-end against the performance budgets, on the
-   server, nightly.
+   server, run by hand.
 
 Wall-clock benchmarks never block a PR. On a shared runner a wall-clock gate
 needs 7% just to keep false positives at 1%, and a 7% gate hides exactly the
@@ -95,10 +95,19 @@ The reason is the hardware, not the permissions. Device parity has nothing to
 compare against on a single-device runner, so a parity suite there is not a
 parity suite. The golden corpora and the macro benchmarks have the same problem
 in a different form: their numbers only mean something on a machine whose
-specification is recorded next to them. Both run nightly on the project's own
-GPU host, along with the perf layer. The wrapper that drives that host carries a
-real instance id and a real host alias, so it stays on the maintainer's machine
-and is not in a clone — as does the workflow that calls it.
+specification is recorded next to them. Both run on the project's own GPU host,
+along with the perf layer, **when the maintainer runs them**. The wrapper that
+drives that host carries a real instance id and a real host alias, so it stays
+on the maintainer's machine and is not in a clone — and neither is the workflow
+that would call it on a schedule. A `schedule:` trigger only fires from the
+default branch, so a workflow that is not committed fires never.
+
+This page and `benchmarks/README.md` both said "nightly" for several releases.
+They were describing a workflow that exists on one laptop and has never run.
+What is true is weaker and worth saying plainly: **nothing runs this layer
+unattended.** `CONTRIBUTING.md` asks for the golden tests after any change to
+adapter or metric behaviour, and that request is answered by a person, not by a
+gate.
 
 This is stated rather than papered over: **a contributor cannot reproduce those
 numbers, and a pull request is not expected to.** Everything a review gates on —
@@ -108,22 +117,28 @@ to justify it, say so in the pull request and it will be measured on the host.
 
 ## What CI runs, and what it no longer does
 
-Six jobs on a pull request, one of which runs the suite. It was ten.
+Seven jobs in `ci.yml` on a pull request, one of which runs the suite. It was
+ten.
 
 | job | what it is for |
 |---|---|
 | lint and types | ruff, mypy, import-linter, interrogate, generated catalogues, citations |
 | tests and coverage floors | the suite, plus the per-module floors |
-| no torch, no otel | the core install works without the optional halves |
+| core install (ubuntu, macOS) | the core install works without the optional halves — and it is the one job that can carry a second operating system |
 | lowest direct dependencies | the declared floors resolve and pass |
 | docs build | `mkdocs --strict`; a dead link is a failure |
 | secret scan | gitleaks |
+| dependency review | whether *this change* adds a dependency already known-vulnerable, or one whose licence contradicts Apache-2.0 |
 
-A seventh job is not in that table, because it is not on the pull-request
-path. `arXiv still says what we say it says` lives in its own workflow —
-`.github/workflows/citations.yml`, because a `schedule:` trigger applies to
-every job in the workflow carrying it, and putting one in `ci.yml` would run all
-six of the above once a week for nothing. It runs weekly and on demand, and asks
+`.github/workflows/codeql.yml` runs on the same pull request from a workflow of
+its own, with the `security-extended` query set. It is not in the table because
+it is not a `ci.yml` job, not because it does not gate.
+
+One more is not on the pull-request path at all. `arXiv still says what we say
+it says` lives in its own workflow — `.github/workflows/citations.yml`, because
+a `schedule:` trigger applies to every job in the workflow carrying it, and
+putting one in `ci.yml` would run all seven of the above once a week for
+nothing. It runs weekly and on demand, and asks
 arXiv whether every identifier in `docs/citations.toml` still carries the title
 recorded beside it. The offline half of the same check — that the manifest and
 the committed documentation name the same set of papers — runs in `lint and

@@ -1,13 +1,14 @@
 """Macro benchmarks against the stated fit, search and load budgets.
 
-Marked ``slow``: excluded from the default run, executed nightly on the
-project's own host, where the hardware is known and the numbers mean something.
+Marked ``slow``: excluded from the default run, executed on the project's own
+host, where the hardware is known and the numbers mean something. Nothing
+schedules that host — the run happens when somebody starts it.
 
 **The gate is 120% of the budget, not 100%.** A budget is a design
 target measured on one machine; a run at 105% is information, not a defect. What
 120% catches is the thing worth catching — an algorithmic change that moved the
 cost by an order of magnitude — while leaving room for a slower disk or a busy
-host. Nightly it warns; before a release it blocks.
+host. On an ordinary run it warns; before a release it blocks.
 
 Wall clock never blocks a PR. These numbers exist as a time series; what gates
 a PR is the `memory` layer, which asserts peak allocation rather than seconds

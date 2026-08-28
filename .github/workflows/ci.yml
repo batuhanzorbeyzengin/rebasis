@@ -1,8 +1,10 @@
 # rebasis — continuous integration
 #
-# Runs on GitHub's free CPU runners. GPU work happens nightly on the project's
-# own host, driven by a workflow that is not in this repository, because the
-# free runners have no accelerator. See docs/development/testing.md.
+# Runs on GitHub's free CPU runners, which have no accelerator. GPU work happens
+# on the project's own host and is run by hand — the workflow that would put it
+# on a schedule is not in this repository, and a `schedule:` trigger only fires
+# from the default branch, so nothing runs that layer unattended.
+# See docs/development/testing.md.
 #
 # Three jobs exist specifically to stop an optional dependency from quietly
 # becoming mandatory. Without them, someone writes `import torch` at module

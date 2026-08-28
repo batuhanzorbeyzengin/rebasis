@@ -128,18 +128,28 @@ in somebody's install.
 
 Being specific about this is the point of the page.
 
-| | Gated on every pull request | Nightly, on the project's own host | Not tested |
+| | Gated on every pull request | Run by hand, on the project's own host | Not tested |
 |---|---|---|---|
-| **OS** | Linux | Linux | **Windows** |
+| **OS** | Linux; macOS for the layers a core install can run | Linux | **Windows** |
 | **Python** | 3.12 | 3.12 | 3.13 in CI |
 | **Stores** | Chroma, LanceDB, sqlite-vec, Qdrant, FAISS, in-memory — the same contract suite and a migrate-and-rollback cycle for each | as CI | Qdrant in server mode beyond the local-mode suite |
 | **Embedders** | in-memory and precomputed | sentence-transformers, fastembed on real models | ollama, llama-cpp, hosted OpenAI-compatible endpoints |
 | **Scale** | hundreds of records | up to 100,000 for index health | **millions — see below** |
 
-**macOS ran in CI and no longer does.** `faiss-cpu` and `torch` each link their
-own OpenMP runtime there, and a process holding both aborts before either library
-does any work. It is the maintainer's own platform and the suite runs there,
-which is a person rather than a gate.
+**The middle column is run by hand, and used to say "nightly".** It was
+describing a workflow that drives the maintainer's GPU host through scripts
+which are not in a clone — so it was never committed, and a `schedule:` trigger
+only fires from the default branch. Nothing has ever run it. Those numbers exist
+because somebody ran them before a release, which is a person and not a gate.
+
+**macOS is back in CI, for part of the suite.** The full suite could not stay
+there: `faiss-cpu` and `torch` each link their own OpenMP runtime on macOS, and
+a process holding both aborts before either library does any work. The
+`core install` job installs neither, so it runs `unit`, `property` and
+`contract` on `macos-latest` as well as `ubuntu-latest` — which covers the
+storage layer, where the platforms actually differ. What it does not cover is a
+real store on macOS: with no extras installed, the five live backends skip and
+only the in-memory one runs.
 
 **Windows has never run.** The storage layer has documented Windows-specific
 behaviour — `os.replace` is used precisely because `os.rename` is not atomic over
