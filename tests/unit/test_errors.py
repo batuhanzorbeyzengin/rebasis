@@ -13,6 +13,7 @@ import re
 import pytest
 
 from rebasis import errors as errors_module
+from rebasis.cli._common import error_docs_url
 from rebasis.errors import (
     EXIT_ABORTED,
     EXIT_DOMAIN,
@@ -38,13 +39,36 @@ def _error_classes() -> list[type[RebasisError]]:
     return out
 
 
+def _defined_error_classes() -> list[type[RebasisError]]:
+    """Every error defined in the module, whether it is exported or not."""
+    return [
+        obj
+        for _, obj in inspect.getmembers(errors_module, inspect.isclass)
+        if issubclass(obj, RebasisError) and obj.__module__ == errors_module.__name__
+    ]
+
+
 ERROR_CLASSES = _error_classes()
 
 
 @pytest.mark.unit
-def test_error_classes_are_exported() -> None:
-    """Every error must be reachable from the public namespace."""
-    assert len(ERROR_CLASSES) > 20
+def test_every_error_class_is_exported() -> None:
+    """Direction two: module → `__all__`.
+
+    `__all__` is the only list the generated catalogue and every parametrised
+    test in this file read, so a class missing from it is invisible to all of
+    them at once — not one check goes red. That is how `MalformedQueryLog`
+    (RB-E1004) and `WritesDidNotSurvive` (RB-E6005) came to be raised on live
+    paths, `cli/_pipeline.py` and `migrate/engine.py`, while the reference page
+    the CLI links to listed neither. The check they needed is this one: the
+    previous test asserted `len(ERROR_CLASSES) > 20`, which is the list counted
+    against itself.
+    """
+    exported = {cls.__name__ for cls in ERROR_CLASSES}
+    missing = sorted(
+        cls.__name__ for cls in _defined_error_classes() if cls.__name__ not in exported
+    )
+    assert not missing, f"error classes absent from __all__: {missing}"
 
 
 @pytest.mark.unit
@@ -169,3 +193,21 @@ def test_generated_catalog_covers_every_code() -> None:
     rendered = render_errors_markdown()
     missing = [cls.code for cls in ERROR_CLASSES if f"`{cls.code}`" not in rendered]
     assert not missing, f"codes absent from the generated catalogue: {missing}"
+
+
+@pytest.mark.unit
+def test_every_code_the_cli_links_to_is_a_link_target() -> None:
+    """The fragment the error panel prints has to exist on the page it names.
+
+    The subtitle under every error is a URL ending in `#rb-exxxx`. The page
+    carried anchors for its ten family headings and none for the rows, so all
+    forty-three links scrolled to the same place: the top. Asserted against
+    `error_docs_url` rather than a literal, so the two halves cannot drift.
+    """
+    rendered = render_errors_markdown()
+    missing = [
+        cls.code
+        for cls in ERROR_CLASSES
+        if f"{{ #{error_docs_url(cls.code).rsplit('#', 1)[1]} }}" not in rendered
+    ]
+    assert not missing, f"codes with no anchor on the reference page: {missing}"

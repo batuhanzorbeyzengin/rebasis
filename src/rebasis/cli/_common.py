@@ -229,6 +229,19 @@ def handle_errors[T](func: Callable[..., T]) -> Callable[..., T]:
 ERROR_DOCS = "https://batuhanzorbeyzengin.github.io/rebasis/reference/errors/"
 
 
+def error_docs_url(code: str) -> str:
+    """The published explanation of one error code, anchor included.
+
+    A function rather than an f-string at the call site because the fragment is
+    half of a contract: `report.catalog` has to generate a matching anchor into
+    `docs/reference/errors.md`, and for a while it did not — the page carried
+    only its ten family headings, so `#rb-e3004` scrolled nowhere and the
+    subtitle was a link that looked precise and was not.
+    `tests/unit/test_errors.py` holds the two ends together.
+    """
+    return f"{ERROR_DOCS}#{code.lower()}"
+
+
 def _render(exc: RebasisError) -> None:
     """A known error: what happened, the detail, the next step.
 
@@ -255,7 +268,7 @@ def _render(exc: RebasisError) -> None:
             # A URL, not a repository path: `pip install rebasis` ships no
             # `docs/` directory, so the old subtitle named a file the reader
             # could not open and a fragment the docs site does not define.
-            subtitle=f"[dim]{ERROR_DOCS}#{exc.code.lower()}[/dim]",
+            subtitle=f"[dim]{error_docs_url(exc.code)}[/dim]",
             border_style="red",
         )
     )

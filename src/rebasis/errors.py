@@ -54,6 +54,7 @@ __all__ = [
     "ItemFailed",
     "LeakageDetected",
     "LockHeld",
+    "MalformedQueryLog",
     "ManifestLocked",
     "MigrateError",
     "MigrationInterrupted",
@@ -71,6 +72,7 @@ __all__ = [
     "UnknownModelProfile",
     "UnsupportedDtype",
     "UserAbort",
+    "WritesDidNotSurvive",
 ]
 
 # Exit codes are a contract for script users: changing one is a breaking change.

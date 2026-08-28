@@ -104,8 +104,14 @@ def render_errors_markdown() -> str:
         for cls in members:
             doc = (cls.__doc__ or "").strip().split("\n")[0]
             transient = "**yes**" if cls.transient else "no"
+            # `attr_list` turns the code span into `<code id="rb-e3004">`, which
+            # is the fragment the CLI prints. Without it the page defined only
+            # the ten family headings, so every error panel's link landed at the
+            # top of the table and left the reader to find the row by eye —
+            # `cli/_common.error_docs_url` is the other half of this contract.
             lines.append(
-                f"| `{cls.code}` | `{cls.__name__}` | {transient} | {cls.exit_code} | {doc} |"
+                f"| `{cls.code}`{{ #{cls.code.lower()} }} | `{cls.__name__}` | "
+                f"{transient} | {cls.exit_code} | {doc} |"
             )
         lines.append("")
     return "\n".join(lines)
