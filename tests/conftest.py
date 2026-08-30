@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import random
+from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -348,14 +349,14 @@ def _build_faiss(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) ->
 def postgres_dsn() -> str:
     """The DSN for the test Postgres, or a skip.
 
-    Two separate reasons to skip and both are reported as themselves: psycopg
+    Two separate reasons to skip and both are reported as themselves: pg8000
     not installed is a missing extra, and no ``REBASIS_TEST_POSTGRES`` is a
     machine with no database on it. Reporting the second as the first would make
     the coverage job's "a backend was skipped for a missing dependency" check
     fire on a laptop, and reporting the first as the second would let a genuinely
     broken install pass unnoticed.
     """
-    pytest.importorskip("psycopg", reason="the pgvector extra is not installed")
+    pytest.importorskip("pg8000", reason="the pgvector extra is not installed")
     dsn = os.environ.get(POSTGRES_ENV)
     if not dsn:
         pytest.skip(
@@ -363,6 +364,36 @@ def postgres_dsn() -> str:
             f"vector extension available, e.g. postgresql://user@localhost/db"
         )
     return dsn
+
+
+@contextmanager
+def pg_connection(dsn: str) -> Iterator[Any]:
+    """A pg8000 connection from a libpq-shaped DSN, in autocommit, always closed.
+
+    pg8000 takes keyword arguments rather than a DSN string, so the URL is taken
+    apart here. Autocommit because every use of this is DDL: without it the
+    connection would hold a transaction and the next fixture's `DROP TABLE`
+    would block on it, which is the deadlock the backend itself opens in
+    autocommit to avoid.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    import pg8000.dbapi
+
+    parts = urlsplit(dsn)
+    connection = pg8000.dbapi.connect(
+        user=unquote(parts.username or "postgres"),
+        password=unquote(parts.password) if parts.password else None,
+        host=parts.hostname or "127.0.0.1",
+        port=parts.port or 5432,
+        database=unquote(parts.path).lstrip("/"),
+    )
+    connection.autocommit = True
+    try:
+        yield connection
+    finally:
+        with suppress(Exception):
+            connection.close()
 
 
 def _postgres_identifier(tmp_path: Any) -> str:
@@ -377,11 +408,10 @@ def _postgres_identifier(tmp_path: Any) -> str:
 
 
 def _build_pgvector(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) -> str:
-    import psycopg
-
     dsn = postgres_dsn()
     table = _postgres_identifier(tmp_path)
-    with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
+    with pg_connection(dsn) as connection:
+        cursor = connection.cursor()
         cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {POSTGRES_SCHEMA}")
         cursor.execute(f'DROP TABLE IF EXISTS {POSTGRES_SCHEMA}."{table}"')
@@ -428,6 +458,12 @@ def pgvector_dsn() -> str:
 
 
 @pytest.fixture
+def pg_connect() -> Callable[[str], Any]:
+    """:func:`pg_connection` as a fixture, for the reason `pgvector_dsn` gives."""
+    return pg_connection
+
+
+@pytest.fixture
 def pgvector_schema() -> str:
     """The schema pgvector fixtures build in, for a suite that builds its own."""
     return POSTGRES_SCHEMA
@@ -447,13 +483,9 @@ def _drop_the_test_schema() -> Iterator[None]:
     dsn = os.environ.get(POSTGRES_ENV)
     if not dsn:
         return
-    import contextlib
-
-    with contextlib.suppress(Exception):  # teardown must not turn a green run red
-        import psycopg
-
-        with psycopg.connect(dsn, autocommit=True) as connection:
-            connection.execute(f"DROP SCHEMA IF EXISTS {POSTGRES_SCHEMA} CASCADE")
+    # Suppressed: teardown must not turn a green run red.
+    with suppress(Exception), pg_connection(dsn) as connection:
+        connection.cursor().execute(f"DROP SCHEMA IF EXISTS {POSTGRES_SCHEMA} CASCADE")
 
 
 _BUILDERS = {

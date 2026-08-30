@@ -50,7 +50,11 @@ def vectors(rng: np.random.Generator) -> Any:
 
 @pytest.fixture
 def typed_table(  # type: ignore[no-untyped-def]
-    tmp_path: Path, vectors: Any, pgvector_dsn: str, pgvector_schema: str
+    tmp_path: Path,
+    vectors: Any,
+    pgvector_dsn: str,
+    pgvector_schema: str,
+    pg_connect: Any,
 ):
     """Build one table per pgvector type and hand back its URI.
 
@@ -59,8 +63,6 @@ def typed_table(  # type: ignore[no-untyped-def]
     **database's** — which is the thing being measured. Casting in Python first
     would measure numpy.
     """
-    import psycopg
-
     dsn, schema = pgvector_dsn, pgvector_schema
     built: list[str] = []
 
@@ -80,7 +82,8 @@ def typed_table(  # type: ignore[no-untyped-def]
                 + f"/{DIM}"
                 for row in vectors
             ]
-        with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
+        with pg_connect(dsn) as connection:
+            cursor = connection.cursor()
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
             cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
             cursor.execute(f'DROP TABLE IF EXISTS {schema}."{table}"')
@@ -102,9 +105,10 @@ def typed_table(  # type: ignore[no-untyped-def]
 
     yield build
 
-    with psycopg.connect(dsn, autocommit=True) as connection:
+    with pg_connect(dsn) as connection:
+        cursor = connection.cursor()
         for table in built:
-            connection.execute(f'DROP TABLE IF EXISTS {schema}."{table}"')
+            cursor.execute(f'DROP TABLE IF EXISTS {schema}."{table}"')
 
 
 def _read_back(uri: str) -> tuple[Any, dict[str, Any]]:

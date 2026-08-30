@@ -63,6 +63,28 @@ PGVECTOR_INDEXES = {"pgvector-hnsw": "hnsw", "pgvector-ivfflat": "ivfflat"}
 QDRANT_SERVER = "qdrant-server"
 
 
+def _pg_connect(dsn: str):
+    """A pg8000 connection in autocommit, from a libpq-shaped DSN.
+
+    pg8000 rather than psycopg for the licence reason `pyproject.toml` records,
+    and it takes keyword arguments rather than a DSN string.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    import pg8000.dbapi
+
+    parts = urlsplit(dsn)
+    connection = pg8000.dbapi.connect(
+        user=unquote(parts.username or "postgres"),
+        password=unquote(parts.password) if parts.password else None,
+        host=parts.hostname or "127.0.0.1",
+        port=parts.port or 5432,
+        database=unquote(parts.path).lstrip("/"),
+    )
+    connection.autocommit = True
+    return connection
+
+
 def _postgres_dsn() -> str:
     """Where the test PostgreSQL is, from the flag or the environment."""
     import os
@@ -239,22 +261,32 @@ def build(backend: str, root: Path, ids: list[str], vectors: np.ndarray) -> str:
         return f"sqlite-vec://{database}#vec_documents"
 
     if backend in PGVECTOR_INDEXES:
-        import psycopg
-
         dsn = _postgres_dsn()
         method = PGVECTOR_INDEXES[backend]
         table = f"health_{method}"
-        with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
+        connection = _pg_connect(dsn)
+        cursor = connection.cursor()
+        try:
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
             cursor.execute(f"DROP TABLE IF EXISTS public.{table}")
             cursor.execute(
                 f"CREATE TABLE public.{table} "
                 f"(id text PRIMARY KEY, text text, embedding vector({vectors.shape[1]}))"
             )
-            with cursor.copy(f"COPY public.{table} (id, text, embedding) FROM STDIN") as copy:
-                for i, record_id in enumerate(ids):
-                    literal = "[" + ",".join(repr(float(x)) for x in vectors[i].tolist()) + "]"
-                    copy.write_row((record_id, texts[i], literal))
+            insert = f"INSERT INTO public.{table} (id, text, embedding) VALUES (%s, %s, %s)"
+            for start in range(0, len(ids), 2000):
+                stop = min(start + 2000, len(ids))
+                cursor.executemany(
+                    insert,
+                    [
+                        (
+                            ids[i],
+                            texts[i],
+                            "[" + ",".join(repr(float(x)) for x in vectors[i].tolist()) + "]",
+                        )
+                        for i in range(start, stop)
+                    ],
+                )
             # After the rows, not before: pgvector's own guidance is to load
             # first and index second, and an HNSW graph built row by row is a
             # different graph from one built over the finished table — which
@@ -272,6 +304,9 @@ def build(backend: str, root: Path, ids: list[str], vectors: np.ndarray) -> str:
                     f"USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
                 )
             cursor.execute(f"ANALYZE public.{table}")
+        finally:
+            cursor.close()
+            connection.close()
         _, _, rest = dsn.partition("://")
         return f"pgvector://{rest}#public.{table}"
 

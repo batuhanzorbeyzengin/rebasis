@@ -7,6 +7,15 @@ migration's weakest guarantee is the database's rather than rebasis'.
 pip install "rebasis[pgvector]"
 ```
 
+The driver is **pg8000**, not psycopg, and the reason is a licence rather than
+a feature. psycopg is the obvious choice and this backend was written against
+it; it is LGPL-3.0-only, and rebasis is Apache-2.0 and meant to sit inside
+products a copyleft dependency would exclude it from — so `ci.yml`'s dependency
+review denies that family, and caught it on the first pull request. pg8000 is
+BSD-3-Clause and pure Python. It has no named-cursor API and no
+`connection.transaction()`, so the two places that need them issue
+`DECLARE`/`FETCH` and `BEGIN`/`COMMIT` themselves.
+
 ## The URI
 
 ```
@@ -102,7 +111,7 @@ batch; `rebasis rollback <job-id>` rolls back a finished job three days later.
 Different scopes, and the second is the one a user asks for.
 
 The connection is opened in **autocommit**, which is the other half of the same
-decision. psycopg's default opens a transaction on the first statement and holds
+decision. DB-API's default opens a transaction on the first statement and holds
 it until something commits — so a `probe` against a live database would sit
 `idle in transaction` for the length of the run, pinning the vacuum horizon of a
 production table for a read that needed no transaction at all. The two places
@@ -135,6 +144,11 @@ Measured on 100,000 records with the orthogonal map `auto` picks
 | HNSW | 0.970 | 0.913 | 0.956 |
 | IVFFlat | 0.853 | **0.308** | 0.838 |
 
+(Re-measured under the shipped `pg8000` driver at 0.896 → 0.322 → 0.875 and
+0.964 → 0.893 → 0.960; the table above is the `psycopg` run these were checked
+against, and the difference is the repeat spread of a non-deterministic index
+build.)
+
 **On IVFFlat a migration costs two thirds of the index's recall**, because its
 list centroids were computed once from a distribution the migration rotated.
 Every vector is correct and in the wrong list. The rebuild recovers essentially
@@ -151,7 +165,7 @@ not a failure — an exact scan cannot lose recall.
 ## Reads stream
 
 `iter_records` opens a **server-side cursor** and fetches `batch_size` rows at a
-time. psycopg's default client-side cursor reads the whole result set into the
+time. A client-side cursor reads the whole result set into the
 client before yielding the first row, which is exactly the `O(N × d)` peak the
 store contract forbids. A five-million-row table costs the same resident memory
 as a fifty-thousand-row one.

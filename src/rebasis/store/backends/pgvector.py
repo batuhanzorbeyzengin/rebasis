@@ -274,11 +274,15 @@ class PgvectorStore:
     ) -> Iterator[Record]:
         """Stream rows through a server-side cursor — lazy by construction.
 
-        A named cursor rather than ``fetchall``: psycopg's default client-side
-        cursor reads the whole result set into the client before the first row
-        is yielded, which is exactly the ``O(N × d)`` peak the store contract
-        forbids. The name makes it a portal on the server, fetched
-        ``batch_size`` rows at a time.
+        A **server-side cursor**, declared in SQL. ``fetchall`` would read the
+        whole result set into the client before the first row is yielded, which
+        is exactly the ``O(N × d)`` peak the store contract forbids, and pg8000
+        has no named-cursor API to ask for a portal with — so the portal is
+        opened by hand with ``DECLARE`` and drained with ``FETCH FORWARD``.
+
+        A cursor needs a transaction, so this opens one and closes it with the
+        stream. That is the whole difference between a read that holds a
+        snapshot while it reads and one that holds it forever.
         """
         wanted = [str(i) for i in ids] if ids is not None else None
         select = [_quote(self._id_column)]
@@ -294,27 +298,16 @@ class PgvectorStore:
             parameters = (wanted,)
 
         seen: set[str] = set()
-        # A transaction because a server-side cursor is a portal and a portal
-        # needs one — "DECLARE CURSOR can only be used in transaction blocks".
-        # It opens here and closes with the stream rather than living for the
-        # connection's lifetime, which is the whole difference between a read
-        # that holds a snapshot while it reads and one that holds it forever.
-        with (
-            self._connection.transaction(),
-            self._connection.cursor(name="rebasis_iter") as cursor,
-        ):
-            cursor.itersize = batch_size
-            cursor.execute(sql, parameters)
-            for row in cursor:
-                record_id = str(row[0])
-                seen.add(record_id)
-                offset = 1
-                vector = None
-                if with_vectors:
-                    vector = _parse_vector(row[offset])
-                    offset += 1
-                text = row[offset] if with_text and self._text_column is not None else None
-                yield Record(id=record_id, vector=vector, text=text)
+        for row in self._stream(sql, parameters, batch_size=batch_size):
+            record_id = str(row[0])
+            seen.add(record_id)
+            offset = 1
+            vector = None
+            if with_vectors:
+                vector = _parse_vector(row[offset])
+                offset += 1
+            text = row[offset] if with_text and self._text_column is not None else None
+            yield Record(id=record_id, vector=vector, text=text)
 
         if wanted is not None:
             missing = [i for i in wanted if i not in seen]
@@ -413,10 +406,14 @@ class PgvectorStore:
             f"UPDATE {self._qualified} SET {_quote(self._vector_column)} = "  # noqa: S608 - identifiers quoted, values bound
             f"%s::{self._element} WHERE {_quote(self._id_column)}::text = %s"
         )
+        cursor = self._connection.cursor()
         try:
-            with self._connection.transaction(), self._connection.cursor() as cursor:
-                cursor.executemany(sql, payload)
+            cursor.execute("BEGIN")
+            cursor.executemany(sql, payload)
+            cursor.execute("COMMIT")
         except Exception as exc:
+            with contextlib.suppress(Exception):
+                cursor.execute("ROLLBACK")
             raise StoreWriteFailed(
                 f"PostgreSQL rejected an update of {len(payload)} records.",
                 hint=(
@@ -427,6 +424,8 @@ class PgvectorStore:
                 context={"store_backend": "pgvector", "count": len(payload)},
                 cause=exc,
             ) from exc
+        finally:
+            _close_cursor(cursor)
 
     def rebuild_index(self) -> None:
         """Rebuild every index on the vector column, concurrently.
@@ -452,11 +451,11 @@ class PgvectorStore:
         names = [str(row[0]) for row in found]
         if not names:
             return
+        cursor = self._connection.cursor()
         try:
-            with self._connection.cursor() as cursor:
-                for name in names:
-                    target = f"{_quote(self._schema)}.{_quote(name)}"
-                    cursor.execute(f"REINDEX INDEX CONCURRENTLY {target}")
+            for name in names:
+                target = f"{_quote(self._schema)}.{_quote(name)}"
+                cursor.execute(f"REINDEX INDEX CONCURRENTLY {target}")
         except Exception as exc:
             raise StoreError(
                 f"Rebuilding the index on {self._schema}.{self._table} failed.",
@@ -468,6 +467,8 @@ class PgvectorStore:
                 context={"store_backend": "pgvector"},
                 cause=exc,
             ) from exc
+        finally:
+            _close_cursor(cursor)
 
     def close(self) -> None:
         """Close the connection. Safe to call more than once."""
@@ -488,14 +489,50 @@ class PgvectorStore:
         return f"{_quote(self._schema)}.{_quote(self._table)}"
 
     def _one(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
-        with self._connection.cursor() as cursor:
+        cursor = self._connection.cursor()
+        try:
             cursor.execute(sql, parameters)
             return cursor.fetchone()
+        finally:
+            _close_cursor(cursor)
 
     def _all(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[Any]:
-        with self._connection.cursor() as cursor:
+        cursor = self._connection.cursor()
+        try:
             cursor.execute(sql, parameters)
             return list(cursor.fetchall())
+        finally:
+            _close_cursor(cursor)
+
+    def _stream(self, sql: str, parameters: tuple[Any, ...], *, batch_size: int) -> Iterator[Any]:
+        """Drain a server-side cursor, ``batch_size`` rows at a time.
+
+        The transaction and the portal are both closed on the way out, including
+        when the caller abandons the generator half-way — which every sampling
+        read does. A portal left open holds a snapshot, and a snapshot held by a
+        tool nobody is watching is the `idle in transaction` this backend opens
+        in autocommit to avoid.
+        """
+        cursor = self._connection.cursor()
+        name = _quote(f"rebasis_iter_{id(self):x}")
+        started = False
+        try:
+            cursor.execute("BEGIN")
+            started = True
+            cursor.execute(f"DECLARE {name} NO SCROLL CURSOR FOR {sql}", parameters)
+            while True:
+                cursor.execute(f"FETCH FORWARD {int(batch_size)} FROM {name}")
+                rows = cursor.fetchall()
+                if not rows:
+                    return
+                yield from rows
+        finally:
+            if started:
+                with contextlib.suppress(Exception):
+                    cursor.execute(f"CLOSE {name}")
+                with contextlib.suppress(Exception):
+                    cursor.execute("COMMIT")
+            _close_cursor(cursor)
 
 
 #: Indexes defined on one column of one table, by name.
@@ -512,7 +549,7 @@ ORDER BY i.relname
 
 
 def _connect(uri: StoreURI, **kwargs: Any) -> Any:
-    """Open a psycopg connection from the URI's own parts.
+    """Open a pg8000 connection from the URI's own parts.
 
     Rebuilt from the parsed pieces rather than handed the original string:
     `parse_store_uri` has already separated the credentials from everything
@@ -520,10 +557,10 @@ def _connect(uri: StoreURI, **kwargs: Any) -> Any:
     the client library decides to log.
     """
     try:
-        import psycopg
+        import pg8000.dbapi
     except ImportError as exc:
         raise MissingDependency(
-            "The pgvector backend needs psycopg, which is not installed.",
+            "The pgvector backend needs pg8000, which is not installed.",
             hint='Install it with `pip install "rebasis[pgvector]"`.',
             context={"store_backend": "pgvector"},
             cause=exc,
@@ -537,30 +574,15 @@ def _connect(uri: StoreURI, **kwargs: Any) -> Any:
             context={"store_backend": "pgvector"},
         )
     settings: dict[str, Any] = {
-        "dbname": database,
+        "database": database,
         "host": uri.host,
         "port": uri.port,
-        "user": uri.username,
+        "user": uri.username or _default_user(),
         "password": uri.password,
-        # **Autocommit, and it is not a shortcut.** psycopg's default opens a
-        # transaction on the first statement and holds it until somebody
-        # commits, and rebasis reads far more than it writes: a `probe` against
-        # a live database would sit `idle in transaction` for the length of the
-        # run, pinning the vacuum horizon of somebody's production table for a
-        # read that needed no transaction at all. Measured here first as a
-        # deadlock — the integration suite's next test could not `DROP TABLE`
-        # past the lock the previous store's dangling read still held.
-        #
-        # The two places that genuinely need a transaction open one explicitly:
-        # `upsert_vectors`, where the batch is the unit of atomicity, and
-        # `iter_records`, where a server-side cursor cannot be declared without
-        # one. `REINDEX CONCURRENTLY` needs the opposite — it refuses to run
-        # inside a transaction block — and gets it for free here.
-        "autocommit": True,
     }
     settings.update(kwargs)
     try:
-        return psycopg.connect(**{k: v for k, v in settings.items() if v is not None})
+        connection = pg8000.dbapi.connect(**{k: v for k, v in settings.items() if v is not None})
     except Exception as exc:
         raise StoreError(
             f"Could not connect to the PostgreSQL database {database!r}.",
@@ -568,6 +590,44 @@ def _connect(uri: StoreURI, **kwargs: Any) -> Any:
             context={"store_backend": "pgvector"},
             cause=exc,
         ) from exc
+
+    # **Autocommit, and it is not a shortcut.** DB-API opens a transaction on
+    # the first statement and holds it until somebody commits, and rebasis reads
+    # far more than it writes: a `probe` against a live database would sit
+    # `idle in transaction` for the length of the run, pinning the vacuum
+    # horizon of somebody's production table for a read that needed no
+    # transaction at all. Measured here first as a deadlock — the integration
+    # suite's next test could not `DROP TABLE` past the lock the previous
+    # store's dangling read still held.
+    #
+    # The two places that genuinely need a transaction open one explicitly:
+    # `upsert_vectors`, where the batch is the unit of atomicity, and
+    # `iter_records`, where a cursor cannot be declared without one.
+    # `REINDEX CONCURRENTLY` needs the opposite — it refuses to run inside a
+    # transaction block — and gets it for free here.
+    connection.autocommit = True
+    return connection
+
+
+def _default_user() -> str:
+    """The account to connect as when the URI names none.
+
+    libpq falls back to the operating system account and pg8000 raises instead,
+    so the fallback is written down: a driver saying "user is required" tells
+    nobody anything about the URI they typed.
+    """
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - a container may have no passwd entry at all
+        return "postgres"
+
+
+def _close_cursor(cursor: Any) -> None:
+    """Close a cursor, never raising. pg8000's cursors are not context managers."""
+    with contextlib.suppress(Exception):
+        cursor.close()
 
 
 def _close(connection: Any) -> None:
@@ -592,10 +652,10 @@ def _columns(connection: Any, schema: str, table: str) -> dict[str, str]:
         "WHERE n.nspname = %s AND c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped "
         "ORDER BY a.attnum"
     )
+    cursor = connection.cursor()
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(sql, (schema, table))
-            return {str(name): str(kind) for name, kind in cursor.fetchall()}
+        cursor.execute(sql, (schema, table))
+        return {str(name): str(kind) for name, kind in cursor.fetchall()}
     except Exception as exc:
         raise StoreError(
             f"Could not read the columns of {schema}.{table}.",
@@ -603,6 +663,8 @@ def _columns(connection: Any, schema: str, table: str) -> dict[str, str]:
             context={"store_backend": "pgvector"},
             cause=exc,
         ) from exc
+    finally:
+        _close_cursor(cursor)
 
 
 def _pick(
@@ -682,7 +744,7 @@ def _literal(vector: FloatArray) -> str:
     """Pgvector's text input form: ``[1,2,3]``.
 
     Text rather than a binary adapter so the backend works with plain
-    ``psycopg`` and does not require the ``pgvector`` Python package to be
+    the driver and does not require the ``pgvector`` Python package to be
     registered on the connection. The cast at the call site (``%s::vector``)
     is what turns it into the column's own type, which is also what makes the
     ``halfvec`` narrowing the *database's* rounding rather than one performed

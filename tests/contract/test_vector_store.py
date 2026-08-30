@@ -198,7 +198,7 @@ def test_a_store_that_will_not_open_raises_a_rebasis_error(backend: str) -> None
         "chroma": "chromadb",
         "faiss": "faiss",
         "lancedb": "lancedb",
-        "pgvector": "psycopg",
+        "pgvector": "pg8000",
         "qdrant": "qdrant_client",
         "sqlite-vec": "sqlite_vec",
     }[backend]

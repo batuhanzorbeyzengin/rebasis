@@ -155,7 +155,7 @@ job does not stand up.
 **pgvector is gated against a real PostgreSQL.** It is the only backend that
 needs something outside the process, and CI runs a `pgvector/pgvector` image
 pinned by digest as a service on both the coverage job and the lowest-direct
-job — the second so the `psycopg` floor is found by running the suite against
+job — the second so the `pg8000` floor is found by running the suite against
 it, the way the chroma, qdrant and faiss floors were. Without the service the
 pgvector layer would skip, and a suite that skips a backend reports the same
 green summary as one that ran it.

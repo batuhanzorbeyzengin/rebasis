@@ -253,6 +253,22 @@ on write is much cheaper than maintaining a graph. A user choosing between them
 is choosing between a slower migration that degrades a little and a faster one
 that degrades a lot and must be reindexed.
 
+**The table above was measured through `psycopg`, and the backend ships on
+`pg8000`** — the driver changed after these runs, for the licence reason
+[the guide](guides/pgvector.md) records. Both headline rows were re-measured
+under the shipped driver rather than assumed to carry over:
+
+| | psycopg | pg8000 |
+|---|---|---|
+| HNSW, `procrustes` | 0.970 → 0.913, rebuilt 0.956 | 0.964 → 0.893, rebuilt 0.960 |
+| IVFFlat, `procrustes` | 0.853 → 0.308, rebuilt 0.838 | 0.896 → 0.322, rebuilt 0.875 |
+
+The differences are the repeat spread this page already documents for Chroma —
+index construction is not deterministic, and the "before" column moves between
+runs of the same configuration. The finding is unchanged in shape and in size:
+HNSW loses single digits, IVFFlat loses two thirds, and the rebuild recovers
+essentially all of it in both.
+
 ---
 
 ## 3. Two different losses wear the same number

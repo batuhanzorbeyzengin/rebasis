@@ -262,7 +262,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     # Same service as the coverage job, for the reason the comment there gives
-    # and one more: the `psycopg` floor is found by running the suite against
+    # and one more: the `pg8000` floor is found by running the suite against
     # it, the way the chroma, qdrant and faiss floors were. A lower bound
     # nothing runs against is a guess with a version number on it.
     services:
