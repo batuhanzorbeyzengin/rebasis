@@ -199,6 +199,86 @@ class TestTieredElimination:
         assert "unscored" in _survivors([leader, unscored])
 
 
+class TestTheCacheIsPerCandidate:
+    """The reason a comparison costs one embedding pass per candidate and not
+    two, and the reason candidates cannot contaminate one another.
+
+    `probe`'s embedding cache is keyed on the encoding profile's fingerprint, so
+    two candidates cannot read each other's vectors however similar their names
+    — and a candidate evaluated once is free the next time somebody weighs it
+    against a different shortlist. That was built for this use and had nothing
+    using it.
+    """
+
+    def test_the_comparison_leaves_its_vectors_behind(
+        self,
+        world: dict[str, Any],
+        tmp_path,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """Measured on the counter rather than on the clock: a wall-clock
+        assertion on a shared runner is noise wearing a red X.
+
+        A subset of the corpus, because a comparison samples: the documents it
+        drew are cached and the ones it did not draw are not, which is the
+        behaviour rather than a shortcoming of the test.
+        """
+        from rebasis.storage.embedding_cache import open_cached_embedder
+
+        _compare(world, cache_dir=tmp_path / "cache")
+
+        cached = open_cached_embedder(
+            world["candidates"]["candidate/a"], directory=tmp_path / "cache"
+        )
+        assert cached is not None
+        try:
+            texts = world["texts"][:50]
+            cached.encode(texts, kind="document", progress=False)
+            after_the_comparison = cached.stats.hits
+
+            assert after_the_comparison > 0, "the comparison cached nothing"
+            assert cached.stats.encoded == cached.stats.misses
+
+            # And a second pass over the same texts is free, which is what
+            # "measurably faster" means for a run somebody repeats.
+            before = cached.stats.encoded
+            cached.encode(texts, kind="document", progress=False)
+
+            assert cached.stats.encoded == before
+            assert cached.stats.hits == after_the_comparison + len(texts)
+        finally:
+            cached.cache.close()
+
+    def test_candidates_cannot_read_each_other_s_vectors(
+        self,
+        world: dict[str, Any],
+        tmp_path,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """Two candidates over the same texts, one cache. The fingerprint is
+        what keeps them apart, and a comparison is exactly where mixing them
+        would be invisible — every row would still look like a measurement."""
+        from rebasis.storage.embedding_cache import open_cached_embedder
+
+        _compare(world, cache_dir=tmp_path / "cache")
+
+        first = open_cached_embedder(
+            world["candidates"]["candidate/a"], directory=tmp_path / "cache"
+        )
+        second = open_cached_embedder(
+            world["candidates"]["candidate/b"], directory=tmp_path / "cache"
+        )
+        assert first is not None
+        assert second is not None
+        try:
+            texts = world["texts"][:20]
+            assert not np.allclose(
+                first.encode(texts, kind="document", progress=False),
+                second.encode(texts, kind="document", progress=False),
+            )
+        finally:
+            first.cache.close()
+            second.cache.close()
+
+
 class TestWhatLeavesTheMachine:
     def test_a_local_backend_is_not_reported_as_remote(self, world: dict[str, Any]) -> None:
         assert remote_candidates(world["candidates"]) == []

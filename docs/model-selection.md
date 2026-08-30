@@ -169,6 +169,15 @@ comparison cheap, and what makes passing it as a candidate meaningless.
 what that round could not separate, on the same ±0.025 band the decision rule
 already reports its own borderline cases at.
 
+**A candidate evaluated once is free the next time.** The embedding cache is
+keyed on the encoding profile's fingerprint — one SQLite file per profile under
+`.rebasis/cache/embeddings/` — so a second comparison over the same sample
+embeds nothing, and two candidates cannot read each other's vectors however
+similar their names. Both are asserted on the cache's own counters rather than
+on a clock (`tests/unit/test_compare.py`), because a wall-clock assertion on a
+shared runner is noise wearing a red X. That cache was built for this use and
+had nothing using it until now.
+
 ---
 
 ## Two things the plan asked for that this did not settle
