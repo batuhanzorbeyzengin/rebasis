@@ -171,6 +171,25 @@ already reports its own borderline cases at.
 
 ---
 
+## Two things the plan asked for that this did not settle
+
+Both are recorded because a checklist item quietly dropped is worse than one
+answered "no".
+
+**`--tiered`'s first round rests on no measurement.** The plan asked for the
+sweep above to set it. It does not: what the sweep shows is that the *ordering*
+improves with the sample, not where a cheap first round should sit, and those
+are different questions — the first round only has to separate what it can, and
+what it can separate depends on the candidates. `TIERED_FIRST_ROUND` carries
+that in the code rather than implying it was derived here.
+
+**The identity check lives in `tools/model_selection.py`, not
+`tools/band_stats.py`.** The plan asked for it as a mode of the second, so that
+the same mistake could not be made twice. It is in the first because the two
+tools read different files — `band_stats.py` reads the band harness's rows and
+this measurement writes its own shape — and a mode that could not be run on the
+file it is about would be a checkbox rather than a check.
+
 ## What this does not establish
 
 - **One incumbent, three candidates, one language.** The candidates span 12

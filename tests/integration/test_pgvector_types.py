@@ -32,6 +32,7 @@ import pytest
 from rebasis.core import l2_normalize
 from rebasis.errors import StoreUnsupported
 from rebasis.migrate.engine import VERIFY_ATOL
+from rebasis.probe.truncation import quantize
 from rebasis.store import open_store
 
 if TYPE_CHECKING:
@@ -182,6 +183,49 @@ class TestTheRoundTrip:
                 f"halfvec rounded by {worst:.2e}, inside migrate's {VERIFY_ATOL} "
                 f"read-back tolerance — the guide's claim needs re-measuring"
             )
+        finally:
+            store.close()
+
+
+class TestTheGridAgainstARealStore:
+    """M3 — is `probe --quantize`'s simulation the arithmetic a store performs?
+
+    `probe --quantize` labels its precision columns **simulated**: rebasis
+    produces float32 and each store narrows it in its own way, so a cell
+    measures what the arithmetic costs rather than what a codec costs. Whether
+    those two are the same number is a question, and this is the one axis where
+    it can be answered without inventing a store — pgvector's `halfvec` is
+    IEEE-754 half precision and so is numpy's `float16`.
+
+    The `int8` axis is deliberately not tested here and could not be: no backend
+    in this project stores int8 the way the grid simulates it. `sqlite-vec`'s
+    `vec_quantize_int8` takes a caller-supplied range and the grid scales by
+    each vector's own largest magnitude — two different quantizers with one
+    name. That disagreement is the reason the label stays on.
+    """
+
+    def test_the_float16_column_matches_the_simulation_exactly(
+        self, typed_table: Any, vectors: Any
+    ) -> None:
+        """Not "closely" — exactly. Both sides are IEEE-754 binary16 rounding of
+        the same float32, so any difference at all would mean the grid is
+        measuring something other than what a `halfvec` column does."""
+        store, read_back = _read_back(typed_table("halfvec"))
+        try:
+            simulated = quantize(vectors, "float16")
+
+            assert _worst(read_back, simulated) == 0.0
+        finally:
+            store.close()
+
+    def test_the_vector_column_matches_the_simulation_too(
+        self, typed_table: Any, vectors: Any
+    ) -> None:
+        """The control: the `float32` cell is the identity on both sides, so it
+        agreeing says the comparison above is comparing what it claims to."""
+        store, read_back = _read_back(typed_table("vector"))
+        try:
+            assert _worst(read_back, quantize(vectors, "float32")) == 0.0
         finally:
             store.close()
 

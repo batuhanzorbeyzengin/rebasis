@@ -190,6 +190,35 @@ the one failure that would make this command worse than not having it.
 
 ---
 
+## Why this is in rebasis rather than in a repository of its own
+
+The plan this was built from left that open, to be decided after the
+measurement: *if the evidence supports a classifier, split it out; if it
+supports only a number, keep it as a diagnostic command inside rebasis.*
+
+It supports only a number, and the decision follows. Three things settle it:
+
+**The shared code is most of it.** The sampling is `probe/session.py`, the
+alignment is `core/unpaired.py`, and the Procrustes solve is the one
+`core/procrustes.py` already calls. A separate repository would either duplicate
+those or depend on rebasis for them, and the second is a package that exists to
+add one command.
+
+**A number is not a different liability from a number.** The case for splitting
+was a different audience and a different liability surface, and both rest on the
+command handing over a capability. It does not: it returns a scalar, and
+mini-vec2vec is published and installable by anybody who wants the capability
+itself. What is left is a diagnostic about an index rebasis is already connected
+to, which is what every other command here is.
+
+**It belongs beside the thing it is about.** Somebody who has just run `probe`
+against their index is exactly the person who should be told this, and a second
+package they have to hear about first is a package nobody runs.
+
+If the evidence ever supports a classifier — a threshold with outcomes behind it
+rather than a policy — that is when the question is worth reopening, and this
+paragraph is what it should be reopened against.
+
 ## Where this sits
 
 This is a diagnostic, not a security product, and rebasis is not a security

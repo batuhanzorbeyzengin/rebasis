@@ -179,6 +179,22 @@ particular codec costs.
 
 The dimension axis is not simulated. Truncating a vector is the whole operation.
 
+**On one axis the simulation was checked against a real store and matched
+exactly.** pgvector's `halfvec` is IEEE-754 binary16 and so is numpy's
+`float16`, and a round trip through a real `halfvec(32)` column returns
+bit-for-bit what `quantize(v, "float16")` produces —
+`tests/integration/test_pgvector_types.py`, with the `vector` column as the
+control. So the `float16` column of this grid is not an approximation of what a
+`halfvec` index costs; it *is* that number.
+
+**On the `int8` axis it could not be, and the reason is why the label stays.**
+No backend here stores int8 the way this grid simulates it. `sqlite-vec`'s
+`vec_quantize_int8` takes a caller-supplied range; the grid scales by each
+vector's own largest magnitude. Two different quantizers with one name, and no
+measurement can make them the same. Read the `int8` column as what per-vector
+scalar quantization costs, and your store's guide for what your store's codec
+costs.
+
 The three narrowings, precisely:
 
 | | what it does |
@@ -217,8 +233,10 @@ This says what the change is worth. Performing it stays yours.
   representations, which is a different arrangement from a cheaper index and the
   grid does not price it.
 - **Nothing was written back.** Every number here is a search over arrays, not a
-  round trip through a store's own codec. Where the two disagree, the store's
-  own guide is the authority — `test_quantized_roundtrip.py` and
+  round trip through a store's own codec. One axis was checked against a real
+  one and matched exactly (`float16` against pgvector `halfvec`, above); the
+  others were not, and `int8` provably cannot be. Where the two disagree, the
+  store's own guide is the authority — `test_quantized_roundtrip.py` and
   `test_pgvector_types.py` are those measurements.
 
 ## Reproducing
