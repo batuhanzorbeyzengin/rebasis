@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import random
+from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -187,7 +188,25 @@ def _candidate(*, name: str = "procrustes", arr: float = 0.93, **kwargs: Any) ->
 #: Backends that can be stood up from a temporary directory, with no server.
 #: Named as a plain tuple because both callers parametrise over it at
 #: collection time, which a fixture's return value cannot reach.
-LIVE_BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec")
+#:
+#: pgvector is in the list and is the one that needs something outside the
+#: process. It is not "a backend that skips": CI stands a Postgres up as a
+#: service, and the skip below exists for a laptop. The distinction matters
+#: because the coverage job fails on a skip whose reason is a missing extra —
+#: the shape that once let this suite report five stores it had never opened.
+LIVE_BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec", "pgvector")
+
+#: Where the test Postgres lives. Unset means "there is no Postgres here",
+#: which is a skip rather than a failure.
+POSTGRES_ENV = "REBASIS_TEST_POSTGRES"
+
+#: Schema every pgvector fixture builds its table in.
+#:
+#: A schema rather than the user's `public`: the suite creates a table per test
+#: and a run interrupted half-way would otherwise leave them scattered through
+#: whatever database somebody pointed it at. One `DROP SCHEMA … CASCADE` at the
+#: end of the session collects all of them.
+POSTGRES_SCHEMA = "rebasis_test"
 
 
 def _build_chroma(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) -> str:
@@ -327,10 +346,153 @@ def _build_faiss(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) ->
     return f"faiss://{path}"
 
 
+def postgres_dsn() -> str:
+    """The DSN for the test Postgres, or a skip.
+
+    Two separate reasons to skip and both are reported as themselves: pg8000
+    not installed is a missing extra, and no ``REBASIS_TEST_POSTGRES`` is a
+    machine with no database on it. Reporting the second as the first would make
+    the coverage job's "a backend was skipped for a missing dependency" check
+    fire on a laptop, and reporting the first as the second would let a genuinely
+    broken install pass unnoticed.
+    """
+    pytest.importorskip("pg8000", reason="the pgvector extra is not installed")
+    dsn = os.environ.get(POSTGRES_ENV)
+    if not dsn:
+        pytest.skip(
+            f"no Postgres to test against: set {POSTGRES_ENV} to a DSN with the "
+            f"vector extension available, e.g. postgresql://user@localhost/db"
+        )
+    return dsn
+
+
+@contextmanager
+def pg_connection(dsn: str) -> Iterator[Any]:
+    """A pg8000 connection from a libpq-shaped DSN, in autocommit, always closed.
+
+    pg8000 takes keyword arguments rather than a DSN string, so the URL is taken
+    apart here. Autocommit because every use of this is DDL: without it the
+    connection would hold a transaction and the next fixture's `DROP TABLE`
+    would block on it, which is the deadlock the backend itself opens in
+    autocommit to avoid.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    import pg8000.dbapi
+
+    parts = urlsplit(dsn)
+    connection = pg8000.dbapi.connect(
+        user=unquote(parts.username or "postgres"),
+        password=unquote(parts.password) if parts.password else None,
+        host=parts.hostname or "127.0.0.1",
+        port=parts.port or 5432,
+        database=unquote(parts.path).lstrip("/"),
+    )
+    connection.autocommit = True
+    try:
+        yield connection
+    finally:
+        with suppress(Exception):
+            connection.close()
+
+
+def _postgres_identifier(tmp_path: Any) -> str:
+    """A table name unique to one test, derived from its own temp directory.
+
+    pytest gives each test a directory named after it, so this is unique without
+    a counter and readable in a `\\dt` listing when a run is being debugged. Truncated to
+    Postgres' 63-byte identifier limit, and lowercased because an unquoted
+    identifier folds anyway.
+    """
+    return f"t_{tmp_path.name}".lower().replace("-", "_")[:63]
+
+
+def _build_pgvector(tmp_path: Any, ids: Any, vectors: Any, texts: Any, dim: int) -> str:
+    dsn = postgres_dsn()
+    table = _postgres_identifier(tmp_path)
+    with pg_connection(dsn) as connection:
+        cursor = connection.cursor()
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {POSTGRES_SCHEMA}")
+        cursor.execute(f'DROP TABLE IF EXISTS {POSTGRES_SCHEMA}."{table}"')
+        cursor.execute(
+            f'CREATE TABLE {POSTGRES_SCHEMA}."{table}" '
+            f"(id text PRIMARY KEY, text text, embedding vector({dim}))"
+        )
+        insert = (
+            f'INSERT INTO {POSTGRES_SCHEMA}."{table}" (id, text, embedding) '  # noqa: S608 - the identifier comes from pytest's own tmp_path
+            f"VALUES (%s, %s, %s)"
+        )
+        cursor.executemany(
+            insert,
+            [
+                (i, text, "[" + ",".join(repr(float(x)) for x in v.tolist()) + "]")
+                for i, v, text in zip(ids, vectors, texts, strict=True)
+            ],
+        )
+    return f"{_as_pgvector_uri(dsn)}#{POSTGRES_SCHEMA}.{table}"
+
+
+def _as_pgvector_uri(dsn: str) -> str:
+    """Rewrite a libpq DSN's scheme as ``pgvector://``.
+
+    The rest of the URI is left exactly as it was. rebasis' own parser reads the
+    host, port, user, password and database out of it, so anything libpq accepts
+    in that shape is accepted here — and rewriting only the scheme means the
+    fixture is not a second, subtly different, DSN parser.
+    """
+    _, _, rest = dsn.partition("://")
+    return f"pgvector://{rest or dsn}"
+
+
+@pytest.fixture
+def pgvector_dsn() -> str:
+    """:func:`postgres_dsn` as a fixture, for suites outside this file.
+
+    A fixture rather than an import: `tests/` is not a package and there are
+    several `conftest.py` under it, so `from tests.conftest import ...` resolves
+    by luck or not at all. The contract suite already learned this the other way
+    round — it writes its backend list out by hand for the same reason.
+    """
+    return postgres_dsn()
+
+
+@pytest.fixture
+def pg_connect() -> Callable[[str], Any]:
+    """:func:`pg_connection` as a fixture, for the reason `pgvector_dsn` gives."""
+    return pg_connection
+
+
+@pytest.fixture
+def pgvector_schema() -> str:
+    """The schema pgvector fixtures build in, for a suite that builds its own."""
+    return POSTGRES_SCHEMA
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _drop_the_test_schema() -> Iterator[None]:
+    """Collect every table the pgvector fixtures created, once, at the end.
+
+    Autouse and session-scoped so that it runs whether or not any pgvector test
+    did. A session that created nothing drops a schema that does not exist,
+    which `IF EXISTS` makes free; a session that was interrupted leaves the
+    tables behind and the next session's `CREATE SCHEMA IF NOT EXISTS` plus this
+    drop collects them.
+    """
+    yield
+    dsn = os.environ.get(POSTGRES_ENV)
+    if not dsn:
+        return
+    # Suppressed: teardown must not turn a green run red.
+    with suppress(Exception), pg_connection(dsn) as connection:
+        connection.cursor().execute(f"DROP SCHEMA IF EXISTS {POSTGRES_SCHEMA} CASCADE")
+
+
 _BUILDERS = {
     "chroma": _build_chroma,
     "faiss": _build_faiss,
     "lancedb": _build_lancedb,
+    "pgvector": _build_pgvector,
     "qdrant": _build_qdrant,
     "sqlite-vec": _build_sqlite_vec,
 }

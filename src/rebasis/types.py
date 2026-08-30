@@ -22,6 +22,7 @@ __all__ = [
     "Adapter",
     "AdapterDirection",
     "AdapterKind",
+    "Arrangement",
     "Decision",
     "Embedder",
     "EncodingProfile",
@@ -64,6 +65,17 @@ Decision = Literal[
     "caution",
     "full_reindex",
 ]
+
+#: Which serving arrangement the measurements support, reported **beside** the
+#: decision rather than as one of its values.
+#:
+#: The two are different axes and a sixth ``Decision`` would have hidden that:
+#: ``full_reindex`` says rebuild the index, ``cascade`` says leave the index
+#: alone and add a stage to the query path. A run can honestly be told both.
+#: Keeping them apart is also what makes this addition non-breaking — a new
+#: field is additive under `docs/stability.md`, a new value in an existing
+#: ``Literal`` silently breaks every script that branches on it.
+Arrangement = Literal["single_stage", "cascade"]
 
 
 def as_float32(x: Any) -> FloatArray:

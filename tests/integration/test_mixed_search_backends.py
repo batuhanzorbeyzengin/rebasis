@@ -58,7 +58,7 @@ DEEP_K = 40
 #: `@pytest.fixture(params=...)` runs at collection, and a conftest is not
 #: importable by name. Every one of these declares it can write, so none is
 #: skipped — a backend that could not would have nothing to half-migrate.
-BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec")
+BACKENDS = ("chroma", "faiss", "lancedb", "pgvector", "qdrant", "sqlite-vec")
 
 
 def closing(store: object) -> None:

@@ -45,12 +45,66 @@ from rebasis.store import open_store
 #: needs. Every one of them is in the README's support table.
 BACKENDS = ("chroma", "qdrant", "lancedb", "sqlite-vec", "faiss")
 
+#: pgvector, once per index type. Two entries rather than one because they are
+#: two different answers to the question this spike asks: HNSW is a graph built
+#: from the geometry at insert time and IVFFlat is a set of list centroids
+#: computed once at build time. Both are stale after a migration and they are
+#: stale in different ways, so averaging them would hide whichever is worse.
+#:
+#: Needs a PostgreSQL with the `vector` extension, named by `--postgres` or
+#: `REBASIS_TEST_POSTGRES`. The spike does not start one.
+PGVECTOR_INDEXES = {"pgvector-hnsw": "hnsw", "pgvector-ivfflat": "ivfflat"}
+
 #: A Qdrant *server*, which is a different backend from `qdrant` above in the
 #: only way that matters here: the embedded mode scans, and the server builds an
 #: HNSW graph once a segment passes its indexing threshold. Everything Qdrant
 #: documents about a changed vector value invalidating the graph is about this
 #: one. Needs `qdrant` listening on 6333; the spike does not start it.
 QDRANT_SERVER = "qdrant-server"
+
+
+def _pg_connect(dsn: str):
+    """A pg8000 connection in autocommit, from a libpq-shaped DSN.
+
+    pg8000 rather than psycopg for the licence reason `pyproject.toml` records,
+    and it takes keyword arguments rather than a DSN string.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    import pg8000.dbapi
+
+    parts = urlsplit(dsn)
+    connection = pg8000.dbapi.connect(
+        user=unquote(parts.username or "postgres"),
+        password=unquote(parts.password) if parts.password else None,
+        host=parts.hostname or "127.0.0.1",
+        port=parts.port or 5432,
+        database=unquote(parts.path).lstrip("/"),
+    )
+    connection.autocommit = True
+    return connection
+
+
+def _postgres_dsn() -> str:
+    """Where the test PostgreSQL is, from the flag or the environment."""
+    import os
+
+    dsn = _POSTGRES.get("dsn") or os.environ.get("REBASIS_TEST_POSTGRES")
+    if not dsn:
+        msg = (
+            "no PostgreSQL to measure against: pass --postgres or set "
+            "REBASIS_TEST_POSTGRES to a DSN with the vector extension available"
+        )
+        raise RuntimeError(msg)
+    return str(dsn)
+
+
+#: Set once from the command line, read by :func:`_postgres_dsn`. A module-level
+#: dict rather than an argument threaded through `build` and `_rebuild`, because
+#: every other backend needs nothing of the sort and widening both signatures
+#: for one of them would make the spike harder to read than the thing it
+#: measures.
+_POSTGRES: dict[str, str] = {}
 
 
 def _await_qdrant(client: Any, name: str, *, timeout: float = 900.0) -> int:
@@ -206,6 +260,56 @@ def build(backend: str, root: Path, ids: list[str], vectors: np.ndarray) -> str:
         connection.close()
         return f"sqlite-vec://{database}#vec_documents"
 
+    if backend in PGVECTOR_INDEXES:
+        dsn = _postgres_dsn()
+        method = PGVECTOR_INDEXES[backend]
+        table = f"health_{method}"
+        connection = _pg_connect(dsn)
+        cursor = connection.cursor()
+        try:
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cursor.execute(f"DROP TABLE IF EXISTS public.{table}")
+            cursor.execute(
+                f"CREATE TABLE public.{table} "
+                f"(id text PRIMARY KEY, text text, embedding vector({vectors.shape[1]}))"
+            )
+            insert = f"INSERT INTO public.{table} (id, text, embedding) VALUES (%s, %s, %s)"
+            for start in range(0, len(ids), 2000):
+                stop = min(start + 2000, len(ids))
+                cursor.executemany(
+                    insert,
+                    [
+                        (
+                            ids[i],
+                            texts[i],
+                            "[" + ",".join(repr(float(x)) for x in vectors[i].tolist()) + "]",
+                        )
+                        for i in range(start, stop)
+                    ],
+                )
+            # After the rows, not before: pgvector's own guidance is to load
+            # first and index second, and an HNSW graph built row by row is a
+            # different graph from one built over the finished table — which
+            # would make the "before" measurement describe a collection nobody
+            # has.
+            if method == "hnsw":
+                cursor.execute(
+                    f"CREATE INDEX ON public.{table} USING hnsw (embedding vector_cosine_ops)"
+                )
+            else:
+                # pgvector's rule of thumb: rows/1000 lists up to a million rows.
+                lists = max(1, len(ids) // 1000)
+                cursor.execute(
+                    f"CREATE INDEX ON public.{table} "
+                    f"USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
+                )
+            cursor.execute(f"ANALYZE public.{table}")
+        finally:
+            cursor.close()
+            connection.close()
+        _, _, rest = dsn.partition("://")
+        return f"pgvector://{rest}#public.{table}"
+
     if backend == "faiss":
         import faiss
 
@@ -338,6 +442,14 @@ def _rebuild(backend: str, root: Path, store: Any, *, probes: int, seed: int) ->
     if backend == QDRANT_SERVER:
         return _qdrant_reindex(probes=probes, seed=seed)
 
+    if backend in PGVECTOR_INDEXES:
+        # The shipped `PgvectorStore.rebuild_index`, for the reason
+        # `_qdrant_reindex` gives: what is being measured is whether *rebasis'*
+        # repair recovers the loss, and a REINDEX written here could recover it
+        # while the one that ships does not.
+        store.rebuild_index()
+        return measure_index_health(store, sample=probes, seed=seed).recall
+
     records = [(r.id, r.vector) for r in store.iter_records(with_text=False)]
     ids = [record_id for record_id, _ in records]
     vectors = np.vstack([vector for _, vector in records])
@@ -444,7 +556,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", action="append", default=None)
     parser.add_argument("--adapter", action="append", default=None, choices=ADAPTERS)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--postgres",
+        default=None,
+        help="DSN for the pgvector backends; defaults to $REBASIS_TEST_POSTGRES",
+    )
     args = parser.parse_args(argv)
+    if args.postgres:
+        _POSTGRES["dsn"] = args.postgres
 
     backends = args.backend or list(BACKENDS)
     adapters = args.adapter or list(ADAPTERS)

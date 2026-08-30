@@ -60,6 +60,16 @@ curl -sL -o qdrant.tar.gz \
 tar xzf qdrant.tar.gz && ./qdrant --config-path /dev/null &
 ```
 
+pgvector needs a PostgreSQL with the `vector` extension, named by `--postgres`
+or `REBASIS_TEST_POSTGRES`. The spike creates the table and the index; it does
+not start a server.
+
+```bash
+python spikes/index_health.py --n 100000 --dim 384 --rebuild \
+    --backend pgvector-hnsw --backend pgvector-ivfflat \
+    --postgres "postgresql://user@localhost/db"
+```
+
 Everything else runs against an embedded database or a file and needs nothing.
 
 ---
@@ -71,6 +81,12 @@ Everything else runs against an embedded database or a file and needs nothing.
 | chroma | 0.988 | 0.982 | −0.007 |
 | sqlite-vec | 1.000 | 1.000 | 0.000 |
 | faiss | 1.000 | 1.000 | 0.000 |
+
+pgvector is not in this table and belongs in section 2's: a table with an HNSW
+or IVFFlat index on the vector column is approximate by construction, and a
+table with **no** index on it scans and cannot lose recall at all. Which of the
+two you have is a `CREATE INDEX` you ran, and `--rebuild-index` is a no-op on
+the second — that is not a failure, it is nothing to repair.
 
 sqlite-vec's `vec0` and a FAISS `IndexFlatIP` both scan. They return the exact
 answer before and after, and there is nothing for a migration to disturb.
@@ -179,6 +195,79 @@ approximates its target, and that the adapter's own ARR cannot see.
 `auto` already selects `procrustes_centered`, so a default run pays something
 inside the noise. A user who overrides it with `--method linear` pays six times
 the repeat spread, and until now nothing would have told them.
+
+---
+
+### pgvector: the index type decides, and the control stops being one
+
+pgvector is the second backend that can rebuild its own index, and the first
+where the choice of index type changes the answer by an order of magnitude. Same
+protocol, 100,000 records, 200 probes, `REINDEX INDEX CONCURRENTLY` for the
+rebuild:
+
+| transform | HNSW before → after | rebuilt | IVFFlat before → after | rebuilt |
+|---|---|---|---|---|
+| `procrustes` | 0.970 → 0.913 (**−0.058**) | 0.956 | 0.853 → **0.308** (−0.545) | 0.838 |
+| `procrustes_centered` | 0.958 → 0.886 (**−0.072**) | 0.940 | 0.877 → **0.315** (−0.562) | 0.845 |
+| `linear` | 0.960 → 0.883 (−0.077) | 0.909 | 0.888 → **0.102** (−0.786) | 0.865 |
+| `low_rank_affine` | 0.945 → 0.853 (−0.093) | 0.861 | 0.883 → **0.090** (−0.793) | **0.603** |
+| *shuffle* (control) | 0.956 → 0.964 (+0.009) | 0.952 | 0.869 → 0.895 (+0.026) | 0.883 |
+
+**On IVFFlat an orthogonal migration costs two thirds of the index's recall.**
+That is the largest degradation this protocol has measured on any backend, and
+it is not a graph problem — IVFFlat has no graph. Its lists are assigned by
+distance to centroids computed once, at build time, from the distribution that
+existed then. An orthogonal map rotates every vector, the centroids do not
+follow, and a probe of the default single list arrives somewhere unrelated. The
+vectors are all correct and all in the wrong list.
+
+`REINDEX CONCURRENTLY` recomputes the centroids and recovers essentially all of
+it — 0.838 against a 0.853 baseline — for every transform except
+`low_rank_affine`, which comes back at 0.603 of 0.883. **On pgvector IVFFlat,
+`--rebuild-index` is not insurance. It is part of the migration.**
+
+**On HNSW it costs 6 to 9 points and the rebuild recovers most of them**, which
+is the same shape Chroma and Qdrant show and about an order of magnitude worse
+than Chroma's orthogonal row. The ordering by transform is the familiar one:
+orthogonal least, unconstrained affine most.
+
+**And the shuffle control stops being a control.** It shows *no loss at all* on
+either index type, where on Chroma it costs 0.344. That is not a broken
+measurement — it is what a transactional store does. Postgres maintains its
+indexes on `UPDATE`: a rewritten row is a new tuple, and it is inserted into the
+index with its new vector, so there is no such thing as an edge pointing at a
+vector that has moved. What degrades instead is the **global** structure — a
+graph built while the distribution was the old one, a set of centroids computed
+from it — and a shuffle is a permutation of the same vector set, so the
+distribution does not move and nothing global is invalidated.
+
+The consequence is worth stating plainly, because it inverts the reading of
+section 2 on this backend: on Chroma the question is *did the individual
+neighbourhoods move*, and on pgvector it is *did the distribution move*. An
+orthogonal map is benign for the first and maximally disruptive for the second,
+which is exactly why the two backends' orthogonal rows are −0.005 and −0.545.
+
+**IVFFlat also migrates two to four times faster** — 102 to 136 seconds against
+270 to 463 for HNSW, at 100,000 records — because maintaining a list assignment
+on write is much cheaper than maintaining a graph. A user choosing between them
+is choosing between a slower migration that degrades a little and a faster one
+that degrades a lot and must be reindexed.
+
+**The table above was measured through `psycopg`, and the backend ships on
+`pg8000`** — the driver changed after these runs, for the licence reason
+[the guide](guides/pgvector.md) records. Both headline rows were re-measured
+under the shipped driver rather than assumed to carry over:
+
+| | psycopg | pg8000 |
+|---|---|---|
+| HNSW, `procrustes` | 0.970 → 0.913, rebuilt 0.956 | 0.964 → 0.893, rebuilt 0.960 |
+| IVFFlat, `procrustes` | 0.853 → 0.308, rebuilt 0.838 | 0.896 → 0.322, rebuilt 0.875 |
+
+The differences are the repeat spread this page already documents for Chroma —
+index construction is not deterministic, and the "before" column moves between
+runs of the same configuration. The finding is unchanged in shape and in size:
+HNSW loses single digits, IVFFlat loses two thirds, and the rebuild recovers
+essentially all of it in both.
 
 ---
 

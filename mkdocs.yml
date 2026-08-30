@@ -111,6 +111,7 @@ nav:
       - The decision rule: concepts/decision-rule.md
   - Related work: related-work.md
   - Guides:
+      - pgvector: guides/pgvector.md
       - Chroma: guides/chroma.md
       - LanceDB: guides/lancedb.md
       - Qdrant: guides/qdrant.md
@@ -131,6 +132,9 @@ nav:
       - Golden corpora — the first real evidence: golden-findings.md
       - When bridging is worth it: bridge-band.md
       - The bridge as a recall stage: cascade-band.md
+      - Which model, on your corpus: model-selection.md
+      - What a cheaper index costs: truncation-band.md
+      - How alignable an index is: exposure.md
       - What a migration does to the index: index-health.md
       - Merging two spaces during a migration: mixed-space-fusion.md
       - What a completed migration is worth: migration-band.md
@@ -157,6 +161,7 @@ nav:
       - 9. The break-even decides: adr/0009-the-break-even-decides.md
       - 10. Retention is bounded by the source: adr/0010-retention-is-bounded-by-the-source.md
       - 11. The hot-path budget is per dimension: adr/0011-the-hot-path-budget-is-per-dimension.md
+      - 12. The cascade decides: adr/0012-the-cascade-decides-when-the-single-stage-does-not.md
 
 # A dead link in the docs is a bug, not a warning.
 strict: true

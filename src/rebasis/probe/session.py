@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from rebasis.compute.arrays import l2_normalize
-from rebasis.errors import InsufficientSamples, StoreUnsupported
+from rebasis.errors import GroundTruthUnavailable, InsufficientSamples, StoreUnsupported
 from rebasis.observability import (
     DROPPED_NO_TEXT,
     DROPPED_UNJUDGED,
@@ -54,7 +54,8 @@ from rebasis.observability import (
 )
 from rebasis.probe.groundtruth import build_tier0, build_tier1, build_tier2
 from rebasis.probe.metrics import estimate_reindex_cost
-from rebasis.probe.runner import ProbeResult, run_probe
+from rebasis.probe.runner import CASCADE_N, ProbeResult, run_probe
+from rebasis.probe.truncation import RESCORE_AT, TruncationGrid
 from rebasis.sample import SampleResult, draw_sample, split_disjoint
 from rebasis.storage.embedding_cache import open_cached_embedder
 from rebasis.store.base import require_capability
@@ -288,6 +289,7 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     cache_dir: Path | str | None = None,
     fit_migration: bool = False,
     access_counts: Mapping[str, float] | None = None,
+    cascade_k: int | None = CASCADE_N,
     on_stage: Callable[[str], None] | None = None,
 ) -> tuple[ProbeResult, CorpusSample]:
     """Probe a live store: sample it, re-embed it, and decide.
@@ -309,6 +311,11 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
     ARR describes the questions people actually send rather than a uniform draw
     over the corpus. It changes what is being estimated and says so in the
     result; `docs/access-weighting.md` has what it is worth and what it costs.
+
+    ``cascade_k`` is the candidate depth the two-stage arrangement is measured
+    at. It is a parameter rather than a constant because candidate depth is
+    bound to whatever reranking budget the caller has, and the report names the
+    depth it measured so two runs at different depths cannot be read as one.
 
     ``fit_migration`` adds a second fit in the opposite direction — the map
     `rebasis migrate` rewrites an index with — scored on what a *completed*
@@ -430,6 +437,12 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
             # measured or omitted, never estimated, because a figure derived
             # from a nominal TDP would read as a measurement of something nobody
             # asked the hardware.
+            cascade_k=cascade_k,
+            # Asked of the store rather than assumed: `Cascade` re-embeds the
+            # candidates it retrieves and refuses at construction on a store
+            # that returns no text, so the decision rule has to know that
+            # refusal before it recommends the arrangement.
+            can_read_text=store.capabilities.can_read_text,
             reindex_cost=(
                 estimate_reindex_cost(
                     corpus.n_total,
@@ -477,6 +490,146 @@ def probe_store(  # noqa: PLR0913 - one argument per pipeline input
             new_profile=new_embedder.profile,
         )
     return result, corpus
+
+
+def probe_truncation(  # noqa: PLR0913 - one argument per pipeline input
+    store: VectorStore,
+    *,
+    dims: Sequence[int],
+    precisions: Sequence[str],
+    old_embedder: Embedder | None = None,
+    query_log: QueryLog | None = None,
+    size: int = 10_000,
+    heldout: int = 1_000,
+    strategy: str = "stratified",
+    k: int = 10,
+    seed: int = 0,
+    batch_size: int = 1_000,
+    rescore_at: int = RESCORE_AT,
+    floor: float | None = None,
+    device: str = "cpu",
+    access_counts: Mapping[str, float] | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> tuple[TruncationGrid, CorpusSample]:
+    """Measure what a cheaper representation of **this** index would cost.
+
+    No candidate model, and that is the whole difference from :func:`probe_store`:
+    the reference is the index's own full-width, full-precision state, and every
+    cell is the same vectors held more cheaply. So nothing is embedded unless a
+    real query log has to be encoded with the index's own model — which is the
+    one thing ``old_embedder`` is for, and the one case it is required in.
+
+    Two ground truths, the same two ``probe`` has:
+
+    **With ``query_log``**, human judgements decide, and the grid reports quality
+    retention — what fraction of the nDCG the index achieves today survives the
+    cut. The reference cell is not 1.000 and should not be.
+
+    **Without one**, held-out documents stand in for queries and the reference's
+    own exact kNN is the ground truth, so the grid reports *agreement*: what
+    fraction of today's results a cheaper index would still return. The reference
+    cell is 1.000 by construction, and the report says which of the two it is
+    looking at rather than leaving a reader to infer it from a number.
+    """
+    from rebasis.compute import measurement_precision, using_device
+    from rebasis.probe.truncation import measure_grid
+
+    stage = on_stage if on_stage is not None else _ignore_stage
+    with (
+        span(Spans.PROBE, {"seed": seed, "k": k}),
+        # The same two the probe pipeline enters, for the same reasons: the
+        # searches reach the device without a `device=` argument on every
+        # function between here and the matmul, and TF32 stays off because a
+        # retention that a `--floor` is compared against is not a number a
+        # 10-bit mantissa should decide.
+        using_device(device),
+        measurement_precision(),
+    ):
+        stage("Sampling the index")
+        corpus = draw_corpus_sample(
+            store,
+            size=size,
+            heldout=heldout,
+            strategy=strategy,
+            seed=seed,
+            batch_size=batch_size,
+            # Text is only needed to encode a real query log with the index's
+            # own model. Without one this reads vectors and nothing else, which
+            # makes the grid runnable against a store that kept no text.
+            need_text=query_log is not None,
+            access_counts=access_counts,
+        )
+
+        stage("Building the reference")
+        if query_log is not None:
+            if old_embedder is None:
+                raise GroundTruthUnavailable(
+                    "A real query log has to be encoded with the model the index "
+                    "was built with, and none was given.",
+                    hint="Pass --old, or drop --queries to measure against held-out documents.",
+                )
+            truth, queries = _truncation_tier1(corpus, query_log, old_embedder, k=k)
+        else:
+            truth, queries = _truncation_tier0(corpus, k=k)
+
+        stage(f"Measuring {len(dims)} x {len(precisions)} cells")
+        grid = measure_grid(
+            doc_vectors=corpus.old_vectors,
+            query_vectors=queries,
+            ground_truth=truth,
+            dims=dims,
+            precisions=precisions,
+            k=k,
+            rescore_at=rescore_at,
+            floor=floor,
+        )
+    return grid, corpus
+
+
+def _truncation_tier0(corpus: CorpusSample, *, k: int) -> tuple[GroundTruth, FloatArray]:
+    """Held-out documents as queries, the index's own kNN as the answer.
+
+    The ground truth the grid is scored against *is* the reference cell's output,
+    so retention here reads as agreement with what the index returns today rather
+    than as quality against a human judgement. That is the honest reading and the
+    report says so; the alternative — presenting an agreement figure as a quality
+    figure — would overstate a cheap cell exactly where a corpus is easy.
+    """
+    from rebasis.probe.groundtruth import build_tier0
+
+    positions = corpus.query_positions
+    queries = corpus.old_vectors[positions]
+    return build_tier0(corpus.old_vectors, queries, positions, k=k), queries
+
+
+def _truncation_tier1(
+    corpus: CorpusSample, query_log: QueryLog, old_embedder: Embedder, *, k: int
+) -> tuple[GroundTruth, FloatArray]:
+    """Real queries, encoded with the index's own model, judged by a human.
+
+    The judgements are the corpus', so the reference cell is a real measurement
+    rather than 1.000 by construction — which is what makes a retention here a
+    statement about quality.
+    """
+    from rebasis.probe.groundtruth import build_tier1
+
+    position = {record_id: i for i, record_id in enumerate(corpus.ids)}
+    kept: list[int] = []
+    qrels: list[set[int]] = []
+    for index, judged in enumerate(query_log.qrels):
+        relevant = {position[name] for name in judged if name in position}
+        if relevant:
+            kept.append(index)
+            qrels.append(relevant)
+    if not qrels:
+        raise GroundTruthUnavailable(
+            "No query in the log names a document that was drawn into the sample.",
+            hint="Increase --sample, or check that the log's ids match the index's.",
+        )
+
+    texts = [query_log.queries[index] for index in kept]
+    queries = _encode(old_embedder, texts, kind="query")
+    return build_tier1(corpus.old_vectors, queries, qrels, k=k), queries
 
 
 def record_decision(  # noqa: PLR0913 - the record needs every input it names

@@ -437,6 +437,7 @@ store behind the LangChain or LlamaIndex bridge honestly is.
 
 | Backend | Read from | Reports |
 |---|---|---|
+| `pgvector` | `format_type` on the column, from the catalogue | `vector` → `False`; `halfvec`, `bit`, `sparsevec` → `True` |
 | `faiss` | `sa_code_size()` against `4 × d`, through the `IndexIDMap2` wrapper | `True` for PQ, scalar-quantized, LSH and friends; `False` for a flat index |
 | `sqlite-vec` | `vec_type()` on a stored vector | `float32` → `False`; `int8` and `bit` → `True`; empty table → `None` |
 | `qdrant` | `VectorParams.datatype` in the collection config | `float16`, `uint8`, `turbo4` → `True`; otherwise `False` |
@@ -444,8 +445,20 @@ store behind the LangChain or LlamaIndex bridge honestly is.
 | `chroma` | nothing to read | `False` |
 | `memory` | nothing to read | `False` |
 
-Two of those answers are deliberately narrower than they first look, and both
-are worth knowing if you go looking for a warning that does not appear.
+Three of those answers are deliberately narrower than they first look, and all
+three are worth knowing if you go looking for a warning that does not appear.
+
+**pgvector's `halfvec` stops a migration rather than degrading one.** Measured
+(`tests/integration/test_pgvector_types.py`): a `halfvec` column rounds by more
+than `migrate`'s 1e-4 read-back tolerance, so a migration into one trips its own
+verification on the first batch. The pre-flight plan says so beforehand rather
+than letting it surface as a failed write. `bit` and `sparsevec` are refused
+outright — they hold a code rather than a reconstruction of the vector that
+produced it, and there is nothing for `migrate` to write back into.
+
+`format_type` rather than `information_schema.columns.data_type`, because the
+latter reports every extension type as `USER-DEFINED` and cannot tell `vector`
+from `halfvec` — which is the entire question.
 
 **Qdrant's `quantization_config` is not this.** Qdrant builds the quantized
 codes *beside* the vectors rather than instead of them — which is what makes its

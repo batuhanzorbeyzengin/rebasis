@@ -34,6 +34,15 @@ predicting. The correlation is the one that survives an outcome this one-sided �
 accuracy cannot separate a good rule from a constant when 95% of outcomes agree,
 and a rank correlation can.
 
+``--view arrangement`` is M2 of `docs/_local` item 1, and it exists because the
+same mistake can be made twice. ``probe`` now recommends a two-stage arrangement
+when ``cascade_advantage`` clears the band, and that quantity has to be shown to
+be a *prediction* rather than the outcome written twice — the identity check is
+printed first for that reason. The rest is the null that matters: the
+arrangement wins on most runs, so "always recommend cascade" is a strong
+baseline, and the tests that survive a one-sided outcome are a rank correlation
+and a permutation test over which runs the rule selected.
+
 ``--view paired`` is the other half. Means cannot be tested against each other,
 so the harness now writes one JSON sidecar of per-query scores per run and the
 row names it in ``per_query``. Given those, each run gets a paired randomisation
@@ -429,6 +438,239 @@ def outcome_view(runs: list[Run], *, alpha: float, metric: str, k: int) -> str:
     return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class Arrangement:
+    """One run, reduced to what the arrangement rule needs and is scored on."""
+
+    corpus: str
+    rung: str
+    #: ``cascade_arr x upgrade_gain`` — the quantity the rule thresholds.
+    cascade_advantage: float
+    #: ``ARR x upgrade_gain`` at ``k`` — the gate that says the single stage did
+    #: not already win. Algebraically ``bridged / status_quo``; that is fine
+    #: here, because it is used as a gate and never scored against an outcome.
+    bridge_advantage: float
+    #: Did the reranked result beat keeping the current model, on the graded
+    #: metric at ``k``. The outcome every rule below is scored against.
+    won: bool
+    #: By how much, as a share of the status quo.
+    margin: float
+
+
+def arrangements_from(
+    rows: list[dict[str, Any]], *, metric: str, k: int, depth: int
+) -> list[Arrangement]:
+    """Reduce rows to the inputs and the outcome of the arrangement rule.
+
+    Every quantity is rebuilt from the harness' own scores rather than read from
+    a ``probe`` result, so that the rule is scored against a measurement it did
+    not produce. Rows that did not run ``cascade@depth`` are skipped rather than
+    defaulted: a missing configuration is not a losing one.
+    """
+    graded = f"{metric}@{k}"
+    out: list[Arrangement] = []
+    for row in rows:
+        status_quo = score(row, "status_quo", graded)
+        cascaded = score(row, f"cascade@{depth}", graded)
+        recall_quo = score(row, "status_quo", f"recall@{k}")
+        recall_reindex = score(row, "full_reindex", f"recall@{k}")
+        recall_bridged = score(row, "bridged", f"recall@{k}")
+        deep_reindex = score(row, "full_reindex", f"recall@{depth}")
+        deep_bridged = score(row, "bridged", f"recall@{depth}")
+        if not status_quo or cascaded is None or not recall_quo or not recall_reindex:
+            continue
+        if not deep_reindex or deep_bridged is None or recall_bridged is None:
+            continue
+        upgrade_gain = recall_reindex / recall_quo
+        out.append(
+            Arrangement(
+                corpus=corpus_label(row["corpus"]),
+                rung=f"{short(row['old_model'])}→{short(row['new_model'])}",
+                cascade_advantage=(deep_bridged / deep_reindex) * upgrade_gain,
+                bridge_advantage=(recall_bridged / recall_reindex) * upgrade_gain,
+                won=cascaded > status_quo,
+                margin=(cascaded - status_quo) / status_quo,
+            )
+        )
+    return out
+
+
+def selects(run: Arrangement, *, single_stage_gate: float) -> bool:
+    """Whether the shipped rule would put the arrangement beside the decision.
+
+    Two of the rule's four conditions are constant over this table and are not
+    modelled: every corpus here carries its documents' text, and every run has a
+    judged query log, so ``can_read_text`` and ``candidate_reuse`` are satisfied
+    on all of them. What varies is the pair of thresholds.
+    """
+    return run.cascade_advantage > 1 + BORDERLINE_BAND and run.bridge_advantage <= single_stage_gate
+
+
+def selection_p(margins: np.ndarray, chosen: np.ndarray, *, permutations: int, seed: int) -> float:
+    """Does the rule pick runs with a larger margin than chance would?
+
+    The null is not a coin and not the majority class: it is **this rule's own
+    selection count, drawn at random**. If the arrangement wins on most runs,
+    almost any selection of them looks good, and the only question worth asking
+    is whether the runs the rule picked did better than the same number picked
+    without looking.
+
+    Exchange the labels rather than the values: under the null the rule carries
+    no information about the margin, so which runs it named is arbitrary and
+    every subset of that size is equally likely. ``(b + 1) / (B + 1)`` for the
+    reason :func:`randomization_p` gives.
+    """
+    size = int(chosen.sum())
+    if size in {0, margins.size}:
+        return float("nan")
+    observed = float(margins[chosen].mean() - margins[~chosen].mean())
+    generator = np.random.default_rng(seed)
+    at_least = 0
+    for _ in range(permutations):
+        drawn = generator.permutation(margins.size)[:size]
+        mask = np.zeros(margins.size, dtype=bool)
+        mask[drawn] = True
+        if float(margins[mask].mean() - margins[~mask].mean()) >= observed - 1e-12:
+            at_least += 1
+    return (at_least + 1) / (permutations + 1)
+
+
+def arrangement_view(  # noqa: PLR0913 - one argument per knob the test has
+    runs: list[Arrangement],
+    *,
+    alpha: float,
+    metric: str,
+    k: int,
+    depth: int,
+    permutations: int,
+    seed: int,
+) -> str:
+    """M2 — is the arrangement rule better than always recommending the arrangement?
+
+    The constant rule is a strong baseline here and that is the point. If the
+    two-stage arrangement wins 36 of 48, "always recommend cascade" is 75%
+    accurate, and a rule that scores 75% has measured nothing. So the accuracy
+    table is printed and then set aside for two things it cannot say: whether
+    the quantity the rule thresholds **orders** the runs by the margin they
+    returned, and whether the runs it **selected** did better than the same
+    number selected blind.
+    """
+    total = len(runs)
+    if not total:
+        return "arrangement: no run measured cascade at this depth"
+
+    wins = sum(run.won for run in runs)
+    base = max(wins, total - wins) / total
+    margins = np.array([run.margin for run in runs], dtype=float)
+    advantage = np.array([run.cascade_advantage for run in runs], dtype=float)
+
+    lines = [
+        (f"arrangement: cascade@{depth} beat status_quo on {metric}@{k} in {wins} of {total} runs"),
+        "",
+        "The constant rule — always recommend the arrangement — therefore scores",
+        f"{wins}/{total} = {wins / total:.4f}. That is the number the shipped rule has to",
+        "beat, and an accuracy that merely matches it has measured nothing.",
+        "",
+        (
+            "| rule | agrees | share | 95% Clopper-Pearson | 95% Wilson "
+            f"| p (H0: 0.5) | p (H0: {base:.4f}) |"
+        ),
+        "|" + "---|" * 7,
+    ]
+
+    variants = {
+        "shipped (single stage <= 1+band)": 1 + BORDERLINE_BAND,
+        "plan text (single stage <= 1)": 1.0,
+    }
+    chosen_by: dict[str, np.ndarray] = {}
+    for label, gate in variants.items():
+        chosen = np.array([selects(run, single_stage_gate=gate) for run in runs], dtype=bool)
+        chosen_by[label] = chosen
+        agrees = int(((chosen) == np.array([run.won for run in runs])).sum())
+        lines.append(_proportion_row(label, agrees, total, alpha=alpha, base=base))
+    lines.append(_proportion_row("always recommend cascade", wins, total, alpha=alpha, base=base))
+
+    lines += [
+        "",
+        "what an accuracy hides — the rule fires on a subset, the constant rule on all:",
+        "| rule | fires | of those, won | precision | of the winners, caught |",
+        "|" + "---|" * 5,
+    ]
+    for label, chosen in chosen_by.items():
+        fires = int(chosen.sum())
+        correct = int(sum(run.won for run, pick in zip(runs, chosen, strict=True) if pick))
+        precision = correct / fires if fires else float("nan")
+        lines.append(
+            f"| {label} | {fires}/{total} | {correct} | {precision:.4f} | {correct}/{wins} |"
+        )
+    lines.append(
+        f"| always recommend cascade | {total}/{total} | {wins} "
+        f"| {wins / total:.4f} | {wins}/{wins} |"
+    )
+    lines += [
+        "",
+        "  Accuracy scores a conservative rule as if silence were a wrong answer. A rule",
+        "  that declines to recommend an arrangement is not asserting the arrangement",
+        "  loses — `arrangement` sits beside a decision rather than replacing it — so the",
+        "  number that describes it is how often the runs it *named* actually won.",
+        "",
+        "identity check — is the rule's quantity the outcome, written twice?",
+    ]
+    gap = np.abs(advantage - (1.0 + margins))
+    lines += [
+        f"  max |cascade_advantage - (1 + margin)| = {gap.max():.4f} over {total} runs",
+        f"  mean {gap.mean():.4f}, and {int((gap <= IDENTITY_TOLERANCE).sum())} of {total} runs",
+        f"  sit inside the {IDENTITY_TOLERANCE} tolerance two rounded ratios can be compared at.",
+        "  Retention is read at the candidate depth on recall, the upgrade at k on recall,",
+        "  and the outcome is the graded metric of a *reranked* list at k. Three quantities,",
+        "  none of which cancels — unlike bridge_advantage, which section 9 found to be one.",
+    ]
+
+    if len(set(margins.tolist())) > 1:
+        spearman = stats.spearmanr(advantage, margins)
+        kendall = stats.kendalltau(advantage, margins)
+        lines += [
+            "",
+            "ranking — does the quantity order the runs by the margin they returned?",
+            f"  Spearman rho = {spearman.statistic:+.3f}  p = {spearman.pvalue:.3g}",
+            f"  Kendall tau  = {kendall.statistic:+.3f}  p = {kendall.pvalue:.3g}",
+        ]
+
+    lines += [
+        "",
+        "selection — did the runs the rule named do better than the same number drawn blind?",
+        f"  {permutations} permutations, seed {seed}",
+    ]
+    for label, chosen in chosen_by.items():
+        picked = int(chosen.sum())
+        if picked in {0, total}:
+            lines.append(f"  {label}: selected {picked}/{total}; no contrast to test")
+            continue
+        p_value = selection_p(margins, chosen, permutations=permutations, seed=seed)
+        lines.append(
+            f"  {label}: selected {picked}/{total}, "
+            f"mean margin {margins[chosen].mean():+.4f} against "
+            f"{margins[~chosen].mean():+.4f}, p = {p_value:.4f}"
+        )
+
+    lines += [
+        "",
+        "per run, ordered by what the rule predicted:",
+        "| corpus | rung | cascade adv. | single stage | margin | won | rule |",
+        "|" + "---|" * 7,
+    ]
+    shipped = chosen_by["shipped (single stage <= 1+band)"]
+    for run, picked in sorted(
+        zip(runs, shipped, strict=True), key=lambda pair: -pair[0].cascade_advantage
+    ):
+        lines.append(
+            f"| {run.corpus} | {run.rung} | {run.cascade_advantage:.3f} "
+            f"| {run.bridge_advantage:.3f} | {run.margin:+.4f} "
+            f"| {'yes' if run.won else 'no':3s} | {'cascade' if picked else '—'} |"
+        )
+    return "\n".join(lines)
+
+
 def _sidecar(path: Path, row: dict[str, Any]) -> dict[str, Any] | None:
     """The per-query scores a row names, or ``None`` if it names none or none is there."""
     relative = row.get("per_query")
@@ -537,7 +779,15 @@ def build_parser() -> argparse.ArgumentParser:
     """Every knob, in one place."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("rows", type=Path, nargs="+", help="One or more .jsonl the harness wrote")
-    parser.add_argument("--view", default="all", choices=("outcome", "paired", "all"))
+    parser.add_argument(
+        "--view", default="all", choices=("outcome", "paired", "arrangement", "all")
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=200,
+        help="Candidate depth the arrangement view reads cascade@N at",
+    )
     parser.add_argument("--k", type=int, default=10, help="Cut-off everything is measured at")
     parser.add_argument("--metric", default="ndcg", choices=("ndcg", "recall", "mrr"))
     parser.add_argument(
@@ -586,6 +836,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 alpha=args.alpha,
                 metric=args.metric,
                 k=args.k,
+            )
+        )
+    if args.view == "all":
+        print("\n" + "-" * 96 + "\n")
+    if args.view in ("arrangement", "all"):
+        print(
+            arrangement_view(
+                arrangements_from(rows, metric=args.metric, k=args.k, depth=args.depth),
+                alpha=args.alpha,
+                metric=args.metric,
+                k=args.k,
+                depth=args.depth,
+                permutations=args.permutations,
+                seed=args.seed,
             )
         )
     if args.view == "all":

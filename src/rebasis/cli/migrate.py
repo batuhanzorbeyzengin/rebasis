@@ -266,6 +266,7 @@ def migrate_command(  # noqa: PLR0913, PLR0917 - each option is a documented CLI
         console.print(budget.render())
         _note_background_reindex(opened)
         _note_quantized_store(opened, dry_run=dry_run)
+        _note_atomic_batches(opened)
         console.print()
         enforce_budget(budget, directory)
 
@@ -439,6 +440,40 @@ def _note_background_reindex(store: VectorStore) -> None:
         "  [dim]This backend rebuilds its search index as vectors change. That work "
         "is not in the estimate above, and some of it continues after the run "
         "finishes.[/dim]"
+    )
+
+
+#: Backends where one batch is one database transaction.
+#:
+#: Named rather than declared as a capability, and the distinction is the point:
+#: a capability is something a caller may branch on, and nothing here branches
+#: on this. It changes which *layer* holds a guarantee the tool provides either
+#: way — the shadow copy, the read-back and `rollback` are unchanged — so it is
+#: a sentence in the plan and not a switch in the engine.
+_ATOMIC_BATCH_BACKENDS = frozenset({"pgvector"})
+
+
+def _note_atomic_batches(store: VectorStore) -> None:
+    """Say which layer holds batch integrity, where the database holds it.
+
+    On five of the six backends a partially written batch is a state `migrate`
+    has to detect and undo, and the shadow copy plus the read-back are what do
+    it. On pgvector the batch is a transaction: it lands whole or it does not
+    exist, and the half-written batch stops being a state at all.
+
+    Worth one line in the plan because a user weighing a migration against a
+    backup is weighing exactly this, and "which layer is holding this" is the
+    difference between trusting a tool and hoping. The shadow copy stays either
+    way — a transaction rolls back one batch and `rollback <job-id>` rolls back
+    a finished job three days later, which are different scopes.
+    """
+    if store.capabilities.name not in _ATOMIC_BATCH_BACKENDS:
+        return
+    console.print(
+        "[dim]Batches are atomic on this backend: each one is a single "
+        "transaction, so a batch lands whole or not at all. The shadow copy is "
+        "still written — it is what `rollback` reads days later, which a "
+        "transaction cannot do.[/dim]"
     )
 
 

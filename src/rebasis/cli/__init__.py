@@ -13,8 +13,10 @@ import typer
 from rebasis.cli._common import console, handle_errors, verbosity_to_level
 from rebasis.cli.adapter import adapter_app
 from rebasis.cli.audit import audit_app
+from rebasis.cli.compare import compare_command
 from rebasis.cli.doctor import doctor_command
 from rebasis.cli.eval import eval_command
+from rebasis.cli.expose import expose_command
 from rebasis.cli.fit import fit_command
 from rebasis.cli.migrate import (
     gc_command,
@@ -201,6 +203,8 @@ def version_command() -> None:
 
 
 app.command("probe")(probe_command)
+app.command("compare")(compare_command)
+app.command("expose")(expose_command)
 app.command("fit")(fit_command)
 app.command("eval")(eval_command)
 app.command("migrate")(migrate_command)

@@ -88,6 +88,22 @@ lancedb = ["lancedb>=0.13"]
 qdrant = ["qdrant-client>=1.10"]
 sqlite-vec = ["sqlite-vec>=0.1.6"]
 faiss = ["faiss-cpu>=1.9"]
+#   pg8000          NOT psycopg, and the reason is a licence rather than a
+#                   feature. psycopg is the obvious driver and this backend was
+#                   written against it; it is LGPL-3.0-only, and `ci.yml`'s
+#                   dependency review denies that family because rebasis is
+#                   Apache-2.0 and is meant to sit inside products a copyleft
+#                   dependency would exclude it from. The gate caught it on the
+#                   first pull request. pg8000 is BSD-3-Clause, pure Python and
+#                   DB-API 2.0; the floor is where the suite was run.
+#   pgvector        the Python package is NOT required: the backend sends
+#                   pgvector's own text form and casts at the call site, so it
+#                   works on a bare connection with no type adapter registered.
+#                   It is in the extra anyway, because a user who wants to
+#                   hand-write a `halfvec` round trip beside rebasis should not
+#                   have to discover that conversion themselves — that is the
+#                   mistake `sqlite-vec`'s int8 column produced here.
+pgvector = ["pg8000>=1.31", "pgvector>=0.3"]
 ollama = ["ollama>=0.3"]
 openai = ["openai>=1.40"]
 llama-cpp = ["llama-cpp-python>=0.3"]
@@ -107,7 +123,7 @@ llamaindex = ["llama-index-core>=0.11"]
 #   langchain,  bridges around an object the caller already has. Pulling a
 #   llamaindex  framework in to wrap nothing is the wrong default.
 all = [
-    "rebasis[otel,eval,fastembed,sentence-transformers,ollama,openai,chroma,lancedb,qdrant,sqlite-vec,faiss]",
+    "rebasis[otel,eval,fastembed,sentence-transformers,ollama,openai,chroma,lancedb,qdrant,sqlite-vec,faiss,pgvector]",
 ]
 
 [project.urls]
@@ -128,6 +144,7 @@ lancedb = "rebasis.store.backends.lancedb:LanceDBStore"
 sqlite-vec = "rebasis.store.backends.sqlite_vec:SqliteVecStore"
 qdrant = "rebasis.store.backends.qdrant:QdrantStore"
 faiss = "rebasis.store.backends.faiss:FaissStore"
+pgvector = "rebasis.store.backends.pgvector:PgvectorStore"
 
 [project.entry-points."rebasis.embedders"]
 precomputed = "rebasis.embed.backends.precomputed:PrecomputedEmbedder"
@@ -396,6 +413,7 @@ module = [
     "torch", "torch.*", "psutil", "psutil.*", "filelock", "filelock.*",
     "sentence_transformers.*", "fastembed.*", "chromadb.*", "lancedb.*",
     "qdrant_client.*", "ranx.*", "usearch.*", "sqlite_vec.*", "zeus.*",
+    "pg8000.*", "pgvector.*",
     "fastembed.*", "faiss.*", "ollama.*", "llama_cpp.*", "openai.*",
     "langchain.*", "langchain_core.*", "llama_index.*",
 ]

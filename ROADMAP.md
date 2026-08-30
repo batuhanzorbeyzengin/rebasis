@@ -30,14 +30,25 @@ Spearman ρ = 0.60, p ≈ 1e-6 — real information about the size of the effect
 not the accuracy the count implied
 ([what the counting is worth](docs/bridge-band.md#9-what-the-counting-is-worth)).
 
-**Backends.** Chroma, LanceDB, sqlite-vec, Qdrant, FAISS and in-memory all run
-the same store contract suite and a migrate-and-rollback test on every commit.
+**Backends.** pgvector, Chroma, LanceDB, sqlite-vec, Qdrant, FAISS and in-memory
+all run the same store contract suite and a migrate-and-rollback test on every
+commit. pgvector is the one that needs a server, and CI stands a real PostgreSQL
+up as a service rather than letting that layer skip — it is also the first
+backend where a batch is a **transaction** rather than four mechanisms rebasis
+built above the storage engine ([the guide](docs/guides/pgvector.md)).
 
-**Not proved at scale.** Everything above is tested on hundreds of records, not
-millions. Nobody has yet pointed `migrate` at an index they could not rebuild.
-That is the single largest gap between 0.1 and something you should trust
-unsupervised, and no amount of unit testing closes it — it needs somebody's real
-vault and a backup.
+**Not proved at scale — half of this has now moved.** The sentence used to say
+"hundreds of records, not millions". `migrate` has now been run against a
+**1,000,000-row** pgvector table, and the property that mattered held: migrating
+5,000 records peaks at 7.3 MB whether the table holds 20,000 rows or a million,
+so peak memory is a function of what is *enqueued* rather than of what is in the
+table. 100,000 records went through at 292 per second, and the shadow covered
+every one of them. [The measurement](docs/guides/pgvector.md#at-a-million-rows).
+
+The other half stands unchanged and is the one that matters: **nobody has yet
+pointed `migrate` at an index they could not rebuild.** A synthetic million rows
+is not somebody's production database, and that gap needs their data and their
+backup rather than more measuring here.
 
 ---
 
@@ -53,7 +64,10 @@ work.
 | **LangChain / LlamaIndex bridges** | ~~adapters written, no tests~~ **done** | A contract suite of duck-typed fakes, one per capability the bridge has to infer, plus a layer driving the frameworks' own in-memory stores where installed. Writing it found both bridges declaring capabilities they could not deliver. |
 | **Sample and embedding cache** | ~~defined, nothing writes to it~~ **done** | One SQLite file per encoding profile under `.rebasis/cache/embeddings/`, keyed on the profile fingerprint so a stale vector cannot be returned. `probe`, `fit` and `eval` use it; `audit replay` deliberately does not. |
 | **`pause` / `resume` commands** | ~~no way to pause from outside~~ **done** | `rebasis pause <job-id>` records a request the engine reads at the top of every batch, so a job stops at a boundary rather than mid-batch; `rebasis resume <job-id>` is the verb that pairs with it. A request is a column of its own, not a `JobState`: only the engine says where a job *is*, and a second process writing `state` would claim a stop that had not happened. |
-| **Serving a two-stage arrangement** | `rebasis.serve.Cascade`, measured over 48 runs ([the evidence](docs/cascade-band.md)), with a cache and per-stage timings | The decision rule does not recommend it. What is missing is not code but a measurement that cannot be taken on a corpus: how the cache behaves under a real query distribution, and what the path costs end to end on somebody's hardware. `Cascade.stats` is the instrument; somebody's traffic is the missing input. |
+| **Serving a two-stage arrangement** | ~~the decision rule does not recommend it~~ **done, and the stated reason was wrong** | This entry said what was missing "cannot be taken on a corpus": how the cache behaves under a real query distribution. It can be taken on a **query log**, which is what `--queries` already hands over — the cache's hit rate is set by how much the candidate sets overlap between queries, and that is countable off a search `probe` already runs. `probe` reports `arrangement`, `candidate_reuse` and the documents it will embed per query. Of the 23 runs the rule names, 23 won, against 36 of 48 for a rule that always recommends it; on accuracy it loses, and that is published too. [ADR 12](docs/adr/0012-the-cascade-decides-when-the-single-stage-does-not.md), [the measurements](docs/cascade-band.md). `Cascade.stats` remains the instrument for live traffic. |
+| **Ranking N candidate models** | ~~`probe` compares two~~ **done, and the measurement lost** | `rebasis compare` scores every candidate on one sample, one split and one query set, with the index's own model as the reference rather than a row. The claim it makes is a ranking, so it was scored as one against the null anybody uses — the published MTEB order — and lost, 9 of 16 against 14 of 16 on top-1. It ships reporting a table and a caveat rather than a winner. [The numbers](docs/model-selection.md). |
+| **What a cheaper index would cost** | ~~nothing measured truncation within one model~~ **done** | `probe --truncate/--quantize` reports a grid of the same model held more cheaply, with a confidence interval per cell and a `--floor` that names the cheapest cell clearing it. Each cell carries a second retention — what it returns when the full-precision vectors reorder its candidates — which is the cascade's shape on a different axis and costs no embedding at all. Writing the result back stays out of scope: that is DDL. [The numbers](docs/truncation-band.md). |
+| **Measuring how alignable an index is** | ~~a spike nothing called~~ **done, defensively** | `rebasis expose` returns one scalar and no translation, refuses a remote reference model, and offers no band — banding an outcome would be a policy threshold with no labelled harm to calibrate against. [What it does not say](docs/exposure.md) leads that page. The *offensive* half of this direction — an index whose text is gone, which is what unpaired alignment would unlock — stays open below. |
 | **`doctor` against a live index** | ~~no store URI~~ **partly done** | `doctor --store <uri>` is in, read-only in every path: URI, open, text, SQLite integrity, manifest integrity, the recorded encoding profile, and whether the collection holds two embedding spaces. Two of the four checks originally listed were dropped rather than guessed. **Chunking drift** needs a baseline nothing records. The **Matryoshka truncate advice** needs a measurement nobody has taken — it is below, under *Matryoshka shortcut*, and it is advice only once that exists. |
 
 ## 0.3 — the parts that need a measurement first
@@ -229,9 +243,18 @@ shape:
     breaks ties on cost, a zero-parameter candidate wins every tie it reaches,
     and on a rung where nothing works `auto` would report `identity` as the
     selected adapter — which reads as "truncation was right" rather than
-    "nothing worked". What is worth fixing instead is the *baseline*: `probe`'s
-    "do nothing" number is dimension-gated and therefore missing on exactly the
-    cross-dimensional runs where a user most needs it.
+    "nothing worked".
+
+    **This entry used to name a second thing to fix, and that thing was not
+    broken.** It said `probe`'s "do nothing" number was dimension-gated and
+    therefore missing on cross-dimensional runs. It is not: `old_model_only` is
+    computed from the index's own vectors against queries encoded with the
+    index's own model, and neither of those has anything to do with the
+    candidate's width. Checked on a 128 → 384 run at both tiers — the figure is
+    there. What *is* gated is `unadapted`, the naive swap, and that gate is
+    correct and documented where it stands: a 384-dimensional query cannot enter
+    a 256-dimensional index, so at different widths the naive swap is not a worse
+    option, it is not an option.
 - **Unpaired alignment.** This is the one direction that would remove the
   hardest limit in the tool.
 
@@ -266,6 +289,14 @@ shape:
     already wanted, with the assignment moved off the individual points and onto
     k-means centroids; its preprocessing is ADR 1 exactly, and it needs `scipy`
     and `scikit-learn` and no torch.
+
+    **Which version, checked rather than assumed.** There are four; the numbers
+    below were measured against the method as v1–v3 describe it, and v4
+    (17 February 2026) was read afterwards to see whether they still stand. The
+    abstract is unchanged, section 3 describes the same three stages, and what
+    v4 adds is length — including the "Choice of Hyperparameters" section that
+    states the published configuration this project now ships in
+    `rebasis.core.unpaired`.
 
     **It works, on the rungs where it works at all.** 36 cells — four corpora,
     three rungs, three seeds — comparing a map fitted with *no correspondence

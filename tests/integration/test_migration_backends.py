@@ -34,7 +34,7 @@ N = 300
 #: `@pytest.fixture(params=...)` runs at collection, and a conftest is not
 #: importable by name. The builders live in `tests/conftest.py`, shared with
 #: the contract suite.
-BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec")
+BACKENDS = ("chroma", "faiss", "lancedb", "pgvector", "qdrant", "sqlite-vec")
 
 
 @pytest.fixture(params=BACKENDS, ids=lambda n: n)

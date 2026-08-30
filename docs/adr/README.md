@@ -20,6 +20,7 @@ decided it**. A record without evidence is an opinion with a number on it.
 | [0009](0009-the-break-even-decides.md) | The break-even decides; the bands describe | Accepted |
 | [0010](0010-retention-is-bounded-by-the-source.md) | Retention is bounded by the old model | Accepted |
 | [0011](0011-the-hot-path-budget-is-per-dimension.md) | The hot-path budget is per dimension | Accepted |
+| [0012](0012-the-cascade-decides-when-the-single-stage-does-not.md) | The cascade decides when the single stage does not | Accepted |
 
 ## When to write one
 

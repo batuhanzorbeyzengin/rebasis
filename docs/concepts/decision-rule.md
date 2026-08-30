@@ -36,6 +36,37 @@ It is only measurable with a real query log. Without one, the ground truth *is*
 the new model's output, so the new model scores perfectly against itself by
 construction.
 
+## The arrangement, beside the decision
+
+The decision says what to do with the **index**. A second field, `arrangement`,
+says what to put in **front** of it, and the two are independent — a run can
+honestly be told `full_reindex` and `cascade` at once.
+
+| `arrangement` | What to do |
+|---|---|
+| `single_stage` | Whatever the decision says. The bridge, if any, produces the final ranking. |
+| `cascade` | Leave the index alone. The bridge fetches a candidate set and the new model reranks it in its own space. |
+
+It is a separate field rather than a sixth `Decision` because a new value in that
+literal breaks every script branching on it, and because they are not
+alternatives to each other.
+
+`cascade` is set when four things hold together: the two-stage break-even clears
+the ±0.025 band, the single stage does not already win, the store returns
+document text, and the arrangement's **price** could be counted. That last
+condition is why the field exists at all. The arrangement re-embeds N documents
+per query, and what that costs turns on how many are already cached — a property
+of your traffic. Given `--queries`, `probe` counts how much the candidate sets
+overlap between your queries and reports it as `candidate_reuse`: a lower bound
+on the hit rate, because a running cache accumulates across queries a sample does
+not contain. Without a real query log it stays unpriced, and an unpriced
+arrangement is reported rather than recommended.
+
+Measured over 48 runs: of the 23 the rule named, 23 won. A rule that always
+recommended the arrangement would have been right 36 times out of 48.
+[ADR 12](../adr/0012-the-cascade-decides-when-the-single-stage-does-not.md) has
+the evidence, including the test the rule loses.
+
 ## The borderline band
 
 ARR is estimated from a sample, so it has an interval around it. If that
