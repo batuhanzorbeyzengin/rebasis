@@ -99,25 +99,33 @@ HELDOUT = 1_000
 #: the index.
 MIN_DOCUMENTS = 2_000
 
-#: Spread across seeds above which the run says the attempts disagreed.
+#: Spread across attempts above which the run says they disagreed.
 #:
-#: Measured over 32 cells (`docs/exposure.md`): the median seed-to-seed spread
-#: is 0.159 and the maximum 0.969. A tenth is where a reader should be told the
-#: attempts did not agree, because at that point the choice of seed is moving
-#: the answer more than most of the drivers do.
+#: A tenth is where a reader should be told the attempts did not agree, because
+#: at that point the choice of seed is moving the answer more than anything else
+#: `docs/exposure.md` measures does. Both sides of that threshold are now
+#: measured: three attempts on BEIR scifact spread by 0.054 and stay silent,
+#: three on nfcorpus by 0.590 — 0.087, 0.624, 0.034 for one index — and say so.
 SPREAD_LIMIT = 0.10
 
 #: Independent alignments run before an answer is given.
 #:
-#: **Not a refinement — a correction.** The method is stochastic in three places
-#: (k-means initialisation, the assignment's restarts, the ICP sampling) and
-#: `docs/exposure.md` measures the seed-to-seed spread on one index at a median
-#: of 0.159 and a maximum of **0.969**. A single run could therefore report 0.03
-#: or 0.99 for the same index, and a security figure that moves that far between
-#: runs is not one anybody can act on.
+#: The method is stochastic in three places — the k-means initialisation, the
+#: assignment's 2-opt restarts, and the ICP sampling — and the paper's own
+#: ensemble exists to dilute exactly that. Running it more than once and
+#: reporting the best is the same reasoning applied one level up, and it is the
+#: reading consistent with a figure that is an upper bound everywhere else: an
+#: adversary can also run it three times and keep whichever worked.
 #:
-#: Three because it is the smallest number that can show a spread at all, and
-#: because the cost is linear in it.
+#: Three because it is the smallest number that can disagree with itself twice,
+#: and because the cost is linear in it — each attempt is a full alignment, about
+#: two minutes on a 5,183-document corpus.
+#:
+#: What the third attempt buys is not a better number, it is the knowledge that
+#: the number is unstable. On scifact three attempts spread by 0.054 and one
+#: would have done. On nfcorpus they returned 0.087, 0.624 and 0.034 from the
+#: same index and the same seed base: a single attempt there reports whichever
+#: of those it drew, with nothing to say it was a draw. See `docs/exposure.md`.
 SEEDS = 3
 
 #: Embedding backends that send text off the machine.
@@ -352,18 +360,22 @@ def _identification(  # noqa: PLR0913 - the two halves, the map and the geometry
 ) -> tuple[float, float]:
     """How often the map puts a document's own index vector first.
 
-    The map was fitted in the centred, normalised geometry, so the held-out
-    vectors are carried into it the same way before being rotated — applying a
-    map to vectors from a distribution it never saw is the mistake this exists
-    to avoid rather than to make.
+    **Centre, normalise, then rotate — in that order.** That is the geometry the
+    map was fitted in, and the three do not commute: W is smoothed by ``alpha``
+    and is therefore *not* exactly orthogonal, so normalising after the rotation
+    is a different operation from normalising before it. Getting the order wrong
+    applies the map to vectors from a distribution it never saw, which is the
+    mistake this function exists to avoid — and it was made here once, in the
+    version before this one.
 
     Both sides are scored in the *target's* centred space rather than being
     pushed back out to raw coordinates. Nothing here needs raw coordinates, and
     not computing them is the cheapest possible guarantee that none is returned.
     """
-    mapped = l2_normalize(
-        as_float32((pad_or_truncate(reference_held, width) - source.mean) @ rotation), copy=False
+    centred = l2_normalize(
+        as_float32(pad_or_truncate(reference_held, width) - source.mean), copy=True
     )
+    mapped = l2_normalize(as_float32(centred @ rotation), copy=False)
     targets = l2_normalize(as_float32(pad_or_truncate(index_held, width) - target.mean), copy=True)
     scores = as_float32(mapped @ targets.T)
     truth = np.diag(scores)

@@ -283,6 +283,14 @@ shape:
     k-means centroids; its preprocessing is ADR 1 exactly, and it needs `scipy`
     and `scikit-learn` and no torch.
 
+    **Which version, checked rather than assumed.** There are four; the numbers
+    below were measured against the method as v1–v3 describe it, and v4
+    (17 February 2026) was read afterwards to see whether they still stand. The
+    abstract is unchanged, section 3 describes the same three stages, and what
+    v4 adds is length — including the "Choice of Hyperparameters" section that
+    states the published configuration this project now ships in
+    `rebasis.core.unpaired`.
+
     **It works, on the rungs where it works at all.** 36 cells — four corpora,
     three rungs, three seeds — comparing a map fitted with *no correspondence
     whatsoever* against the paired ceiling `rebasis fit` reaches on the same

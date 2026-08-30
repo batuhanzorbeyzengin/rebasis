@@ -364,6 +364,23 @@ confirmed by the paper's own accounting: its experiments consumed "almost 176
 GPU days for training". For a tool that runs on a laptop that is the argument,
 not a detail.
 
+**Read here only as an alignment method until now, and that was half the
+paper.** Its own framing is a security one — *vector databases reveal (almost)
+as much as their inputs* — and the translation is the attack rather than the
+contribution: an adversary holding stolen vectors and a public encoder over
+their own documents recovers enough geometry to infer what the documents were.
+Everything above treats that machinery as a way to fit an adapter without pairs.
+It is also the reason [`rebasis expose`](exposure.md) exists, which answers the
+question from the other side: how far does that translation get on *your* index.
+The command returns a scalar and no translation, because the capability is
+already published and installable and the number is not.
+
+What this project measured that the papers do not report: the alignment is not
+stable on every corpus. Three attempts on one BEIR corpus agree to within 0.054;
+on another they return 0.087, 0.624 and 0.034 for the same index. A single run
+of any of this — theirs or ours — can therefore understate what is recoverable,
+which is worth knowing before reading one number as an upper bound on risk.
+
 Two pieces of standing context sit under all of this. **Relative
 representations** — Moschella et al., [*Relative representations enable
 zero-shot latent space communication*](https://arxiv.org/abs/2209.15430)

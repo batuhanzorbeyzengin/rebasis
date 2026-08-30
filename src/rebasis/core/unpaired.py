@@ -61,40 +61,54 @@ __all__ = [
     "preprocess",
 ]
 
-#: Every hyperparameter the method has, at the values the paper reports.
+#: Every hyperparameter the method has, at the values the paper publishes.
 #:
 #: A dict rather than a dozen keyword arguments: they are one choice — "run the
-#: published configuration" — and a caller who wants to vary one of them is
-#: doing a measurement rather than using a tool. `spikes/unpaired_align.py` is
-#: where that measurement lives.
+#: published configuration" — and a caller who wants to vary one is doing a
+#: measurement rather than using a tool. `spikes/unpaired_align.py` is where
+#: that measurement lives, and it carries the same values for the same reason.
+#:
+#: **These were wrong once, and the way they were wrong is worth recording.**
+#: A first version of this module carried smaller, invented figures under a
+#: docstring that said they were the paper's — five of eight differed. arXiv:
+#: 2510.02348v4 §"Choice of Hyperparameters" states them, and they are below.
 DEFAULTS: dict[str, Any] = {
-    #: Independent clusterings pooled into the anchor set.
-    "runs": 5,
-    #: Clusters per run. The QAP is solved in C x C rather than n x n, which is
-    #: what makes the matching tractable at all.
-    "clusters": 20,
-    #: 2-opt climbs to the first local optimum, so one run is a lottery ticket.
+    #: Ensemble members in the anchor stage. Each contributes ``clusters``
+    #: anchors to a concatenated relative representation, so a member whose
+    #: assignment found the wrong permutation contributes noise the others
+    #: outvote. The paper's ``s = 30``, and it is the parameter that makes the
+    #: method stable rather than merely cheap.
+    "runs": 30,
+    #: Clusters per space per member — the paper's ``c = 20``. It raises this to
+    #: 30 for the one model pair where 20 converged somewhere sub-optimal, which
+    #: is the failure mode this stage has.
     "qap_restarts": 30,
-    #: Vectors k-means sees per run. Clustering a million rows five times over
-    #: is the one place this could become slow, and the centroids of a sample
-    #: are the centroids.
-    "cluster_sample": 20_000,
-    #: Neighbours averaged when forming a pseudo-pair. An average rather than
-    #: the single nearest: the two sides share no document, so no source row has
-    #: a correct match to find — only a neighbourhood of documents about the
-    #: same thing, and picking one of them would be picking noise.
-    "neighbours": 5,
-    "refine1_iters": 30,
-    "refine1_sample": 20_000,
-    "refine2_clusters": 200,
-    #: One correction, and only one: the paper measures a second making things
-    #: slightly worse.
+    "clusters": 20,
+    #: Vectors each member clusters. Clustering everything thirty times is the
+    #: dominant cost and buys nothing: twenty centroids do not need a corpus.
+    "cluster_sample": 10_000,
+    #: Neighbours averaged into one pseudo-pair — the paper's ``k = 50``. There
+    #: is no one-to-one match between the two document sets, which is the whole
+    #: setting, so a single nearest neighbour would be an arbitrary choice among
+    #: many equally good ones.
+    "neighbours": 50,
+    #: ICP iterations. The paper reports the alignment rising monotonically with
+    #: this, and 100 being enough by a wide margin.
+    "refine1_iters": 100,
+    #: Source rows per ICP iteration — the paper's ``n_s = 10,000``.
+    "refine1_sample": 10_000,
+    #: Clusters in the correction stage — the paper's ``c' = 500`` — and how
+    #: many times it runs. Once, exactly: the paper measures two or more making
+    #: the alignment slightly worse.
+    "refine2_clusters": 500,
     "refine2_iters": 1,
-    #: How far the smoothed map is allowed to drift from a rotation.
-    "alpha": 0.3,
+    #: Exponential smoothing on the transform, the paper's ``alpha = 0.5``. It
+    #: is also what lets W leave the orthogonal manifold: orthogonality is
+    #: enforced softly rather than by re-projecting after every update.
+    "alpha": 0.5,
     #: ``gram`` is the author's notebook, ``cosine`` is the paper's text. They
-    #: are different matrices and the QAP is not invariant to the difference;
-    #: the default is what produced the published numbers.
+    #: are different matrices and the assignment is not invariant to the
+    #: difference; the default is what produced the published numbers.
     "kernel": "gram",
 }
 

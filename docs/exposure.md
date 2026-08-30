@@ -6,9 +6,14 @@
 $ rebasis expose --store chroma:///path/db#documents
 
   Alignability   0.184  (1,000 documents, mean rank 27.4)
+  Attempts       0.171, 0.184, 0.166  (the best of them is the figure above;
+                 the method is stochastic)
   Reference      sentence-transformers/all-MiniLM-L6-v2 (local)
   Sample         20,000 of 487,213  seed 0
 ```
+
+*(The shape of the output, on an invented index. What the numbers look like on
+real corpora is [further down](#what-it-looks-like-elsewhere) and is measured.)*
 
 An adversary holding only your vectors, plus a public embedding model over
 **their own** documents, can fit a map between the two spaces with no paired
@@ -43,7 +48,10 @@ your access controls, and this tool knows nothing about those.
 **A low number is not an assurance.** It is measured against one family of
 methods with one reference model. A better method may appear tomorrow, and a
 better reference model exists today for somebody who looks harder than the
-default. [ADR 7](adr/0007-audit-is-tamper-evident.md) draws the same line for
+default. And on some corpora the *same* method scores low or high depending on
+which attempt you read — measured, [further down](#one-of-these-columns-is-a-number-and-the-other-is-a-coin-flip) —
+so a low figure can mean the attack failed rather than that your index resisted
+it. [ADR 7](adr/0007-audit-is-tamper-evident.md) draws the same line for
 the audit trail: what a mechanism buys is worth stating, and so is what it does
 not.
 
@@ -118,65 +126,209 @@ finding.
 
 ### What it looks like elsewhere
 
-`tools/exposure_band.py`, 48 cells: four corpora (SciFact, NFCorpus, ArguAna and
-CQADupStack/android), three indexed models, two reference models, two seeds.
-Each held-out document is ranked against 1,000 others.
+Twelve measurements, on two BEIR corpora, with three models standing in turn as
+the index and two as the reference. Every document in both corpora was sampled —
+scifact 5,183, nfcorpus 3,633 — and every cell ranks a held-out document against
+999 others.
 
-**Excluding the 16 same-model cells** — those are a positive control, not a
-result: there is nothing to align, and they come back at a median of 1.000 to
-show the measurement can reach it at all.
+**Each cell below is one alignment, not the best of three that the command
+runs.** That distinction turns out to matter more than anything else in the
+table, and the next section is about it.
 
-| | cells | min | median | max |
-|---|---|---|---|---|
-| **everything** | 32 | 0.001 | **0.083** | 0.998 |
-| reference from the same publisher | 8 | 0.003 | **0.275** | 0.998 |
-| reference from a different publisher | 24 | 0.001 | **0.083** | 0.993 |
+| indexed | reference | scifact | nfcorpus |
+|---|---|---|---|
+| bge-base | bge-small | 0.950 | 0.084 |
+| bge-base | all-MiniLM-L6 | 0.875 | 0.001 |
+| bge-small | all-MiniLM-L6 | 0.916 | 0.009 |
+| all-MiniLM-L6 | bge-small | 0.927 | 0.734 |
+| *bge-small* | *bge-small* | *1.000* | *0.991* |
+| *all-MiniLM-L6* | *all-MiniLM-L6* | *1.000* | *0.356* |
 
-The range spans three orders of magnitude. That is why this page offers you a
-range rather than a verdict: 0.18 is unremarkable in this table and 0.18 is also
-a fifth of a thousand-document hold-out identified from vectors alone, and which
-of those readings matters is yours.
+The italic rows are controls: the reference model **is** the indexed model, so
+the two halves are samples from one distribution and the map the method is
+looking for is the identity. They are not results. They are there to show what
+the harness scores when the answer is free.
+
+### One of these columns is a number and the other is a coin flip
+
+Run the top-left cell three times instead of once and the attempts are 0.958,
+0.940 and 0.904 — a spread of 0.054 around a stable answer. Run the top-right
+cell three times and they are **0.087, 0.624 and 0.034**: a spread of 0.590,
+which is larger than the entire range of the scifact column.
+
+So the scifact column can be read. The nfcorpus column cannot. Those five
+numbers are single draws from a distribution wide enough that "0.084" and
+"0.734" may be the same cell twice, and no ordering of models, references or
+families survives being read off them. An earlier draft of this page read a
+finding out of that column — that the corpus mattered more than the model pair —
+and the finding was an artefact of drawing once.
+
+What is left is still the most useful thing here, and it is about *your* index
+rather than these:
+
+> A number measured on somebody else's corpus tells you very little about yours,
+> and on some corpora a number measured once tells you very little either.
+
+Which is the case for running the command rather than reading a table.
+
+### The control is part of the reading
+
+Look at the last row. On nfcorpus, `all-MiniLM-L6` aligned against **itself**
+scores 0.356. There is no distribution shift there and no model gap to bridge;
+the map the method is looking for is the identity, and it did not find it.
+
+That is a warning about reading a low number as good news:
+
+> A low alignability means *either* your index resists this attack *or* this
+> attack failed on your corpus, and the number alone does not distinguish them.
+
+The way to tell them apart is to run the control yourself — pass `--reference`
+the same model your index was built with. If that scores near 1.000, the method
+works on your corpus and a low number against a public reference is a finding.
+If the control is also low, the method failed and you have learned nothing about
+your index, in either direction.
+
+### Why three attempts
+
+`SEEDS = 3`, and the two cells above are why.
+
+Three attempts buy almost nothing on scifact: the spread is 0.054, under the
+0.10 that triggers a warning, and any one of them would have told you the same
+thing. Three attempts on nfcorpus change the answer from 0.087 to 0.624 — the
+same index, the same models, the same seed base, and a seven-fold difference in
+what gets printed depending on which attempt you happened to make.
+
+The point of the third attempt is not that the best of three is the true number.
+It is that one attempt cannot tell you it is unstable and three can. At a spread
+of 0.590 the command prints:
+
+> The 3 attempts disagreed by 0.59 (0.087, 0.624, 0.034). The method is
+> stochastic …
+
+which is the honest output for that index — more honest than any single figure,
+including the best one. `SPREAD_LIMIT = 0.10` is what decides that the sentence
+appears; scifact's 0.054 stays silent and nfcorpus's 0.590 does not.
+
+Three rather than five or ten is a cost decision and is recorded as one: each
+attempt is a full alignment, the scifact cell took about two minutes per
+attempt, and a diagnostic that takes twenty minutes is a diagnostic nobody runs.
+Three is the smallest number that can disagree with itself twice.
+
+*(One caveat for anybody reproducing this: the same seed produced 0.084 in one
+run and 0.087 in another. Seeding pins the sample, the split and the
+initialisation; it does not pin the floating-point arithmetic underneath, and
+three documents out of a thousand moved.)*
 
 ---
 
 ## What raises it
 
-Measured, on the grid above:
+One thing, measured. Two things that a first draft of this page claimed and the
+spread measurement took back.
 
-**The reference model, more than anything else.** A reference from the same
-publisher as the index's model raises the median from **0.083 to 0.275** — more
-than three-fold. That is the one thing on this list an adversary controls and
-you do not, and it means the number `expose` prints with its default reference
-is a floor on what a better-chosen one would reach.
+**Whether the alignment worked at all.** `cluster_self_consistency` — the mean
+cosine between the source centroids pushed through the fitted map and where
+k-means, started from them, actually settled on the target side — ranks the
+outcome of **the same run** at Spearman +0.900 across all twelve cells, and it
+is not the corpus split doing that work: within scifact alone it is +0.812
+(n = 6, p = 0.050) and within nfcorpus alone +0.943 (n = 6, p = 0.005). The
+method's own confidence signal, `qap_score_mean`, manages +0.669 over the
+twelve. `orthogonality_error` and `refine_objective_final` rank nothing:
+−0.518 and −0.147, neither significant.
 
-**The corpus, enormously.** Same models, same protocol, four collections:
+Within-run is the whole point of it. On a corpus where three attempts return
+0.087, 0.624 and 0.034, no property of the corpus can predict the answer,
+because there is no single answer to predict — but a quantity computed *inside*
+each attempt still tracks how that attempt turned out. That is what
+`cluster_self_consistency` does, and it needs no reference permutation, unlike
+the centroid agreement discussed [above](#why-there-is-no-low-medium-high).
 
-| corpus | documents sampled | median alignability |
-|---|---|---|
-| ArguAna | 8,674 | **0.745** |
-| SciFact | 5,183 | 0.261 |
-| CQADupStack/android | 20,000 | 0.044 |
-| NFCorpus | 3,633 | 0.007 |
+`--json` carries it under `diagnostics`; the printed output does not, because a
+number that needs this much context is not a line in a summary.
 
-A hundred-fold between the top and the bottom. What separates them is not size —
-the largest sample is third from the top — and this measurement does not
-establish what it is. ArguAna is argument counter-retrieval, where every
-document is a self-contained argument; NFCorpus is nutrition abstracts. That
-these differ by two orders of magnitude, and that nothing here says why, is the
-strongest argument for measuring your own index rather than reading this table.
+**Not the publisher, and not the stored width — neither claim survived.** An
+earlier draft reported that different-publisher pairs aligned better than
+same-publisher ones (median 0.804 against 0.517), and that 384-dimensional
+indexes aligned better than 768-dimensional ones (0.825 against 0.479). Both
+medians were dominated by nfcorpus cells that a re-run moves by up to 0.590.
+Restricted to the corpus where the measurement is stable, the four non-control
+cells are 0.875, 0.916, 0.927 and 0.950 — and neither family nor width separates
+them, with only one same-family cell to separate anything by.
 
-**The seed, which is the uncomfortable one.** The same corpus, models and
-sample, run at two seeds: the median spread is **0.159** and the maximum is
-**0.969**. The method is stochastic in three places — the k-means
-initialisation, the assignment's restarts, the ICP sampling — and on some
-indexes that decides the answer.
+So: nothing in this grid raises or lowers alignability except the corpus and the
+run. That is a thinner finding than the one it replaces and it is the one the
+measurements support.
 
-  So `expose` runs **three** alignments by default and reports the **best**,
-  which is the reading consistent with everything else on this page: an
-  adversary can also run it three times and keep whichever worked. Where the
-  attempts disagree by more than 0.10 the run says so and prints all three. A
-  single-attempt number on an index in that regime is not a measurement of the
-  index.
+Why nfcorpus is the unstable corpus is **unverified**. It is smaller (3,633
+against 5,183) and topically narrower, and either would plausibly make twenty
+k-means clusters less stable across a split — the measured
+`cluster_self_consistency` there is 0.52–0.65 against scifact's 0.66–0.74, with
+no overlap — but nothing here isolates a cause. A sweep over corpus size at
+fixed topic breadth would settle it.
+
+---
+
+## What storage does
+
+An index stored at a quarter of the width, or a thirty-second of the bits, is
+a different set of vectors to align. Whether that is a defence is a question,
+and on one corpus it has an answer.
+
+`bge-base` over BEIR scifact, reference `bge-small`, seed 0, pool 1,000. The
+first two columns are `expose`; the last two are the same corpus and the same
+model in the [truncation grid](truncation-band.md), joined on nothing but corpus
+and model — two measurements, not one experiment:
+
+| stored as | alignability | mean rank | retrieval retained | rescored |
+|---|---|---|---|---|
+| 768 float32 | 0.947 | 1.1 | 1.000 | 1.000 |
+| 768 int8 | 0.942 | 1.1 | 1.001 | 1.000 |
+| 768 binary | **0.576** | 3.2 | 0.906 | 0.999 |
+| 256 float32 | 0.825 | 1.5 | 0.938 | 1.000 |
+| 256 int8 | 0.726 | 2.8 | 0.937 | 1.000 |
+| 256 binary | **0.058** | 103.6 | 0.695 | 0.964 |
+
+Every cell is one alignment, and three attempts on this corpus and model pair
+spread by 0.054. **Read nothing below that.** Two of the gaps here are inside
+it, one is barely outside, and three are far outside; each is labelled.
+
+**int8 is free for the attacker.** A quarter of the storage, retrieval within
+0.001 of full precision, and alignability moves from 0.947 to 0.942 — a gap of
+0.005, an order of magnitude inside the noise floor, which is to say no
+measurable change at all. Symmetric per-vector int8 keeps the geometry the
+alignment is fitting, which is also why it is nearly free for retrieval. The
+same property does both. At 256 dimensions int8 does cost something — 0.825 to
+0.726 — but that gap is 0.099 against a 0.054 floor, so read it as "possibly
+something" rather than as a number.
+
+**Binary is the only column that clearly costs them.** 0.947 to 0.576 at full
+width is a gap of 0.371, seven times the floor, and stacked with a cut to 256
+the map is ranking the right document 103rd on average out of 1,000. That is
+well short of chance, so something survives, and just as far from
+identification.
+
+### The catch, and it is a real one
+
+The `rescored` column is what makes binary tolerable for retrieval — 0.906
+becomes 0.999 — and rescoring works by re-ranking the top 200 candidates
+**with the full-precision vectors**. `probe/truncation.py` passes them in as
+`full_documents`. So a deployment that rescores is a deployment that still holds
+the vectors the binary storage was supposed to have removed, and an adversary
+who reaches the index reaches those too.
+
+The row that actually buys the reduction is therefore the unrescored one:
+0.906 retained at 768 binary, 0.695 at 256 binary. Storing binary *and nothing
+else* costs about ten points of nDCG at full width and buys a drop from 0.947 to
+0.576. Whether that trade is worth taking is not a question this project can
+answer for you, and it is at least a trade rather than a free lunch.
+
+**Read this on one corpus only.** These six cells are scifact, where the
+alignment works well for every model pairing. On nfcorpus the same attack fails
+at float32 already, and there is nothing for a storage choice to buy. One
+corpus, one model pair, one seed — enough to show the shape of the trade-off and
+not enough to give you a number for your index. `rebasis expose --store` on the
+index you actually have is the number for your index.
+
 
 ---
 
@@ -237,10 +389,31 @@ register applies here. In particular:
 ## Reproducing
 
 ```bash
+# your own index
 rebasis expose --store <uri> --json
 
+# the twelve-cell table above
 uv run --extra sentence-transformers --with ir-datasets --with model2vec \
-    python tools/exposure_band.py --corpora heldout --corpora beir \
-    --cache-dir ~/band-cache --out reports/band/exposure.jsonl
+    python tools/exposure_band.py \
+    --corpus beir/scifact/test --corpus beir/nfcorpus/test \
+    --seeds 1 --seed 0 --cache-dir ~/band-cache \
+    --out reports/band/exposure.jsonl
+
+# the storage axis
+uv run --extra sentence-transformers --with ir-datasets --with model2vec \
+    python tools/exposure_band.py --corpus beir/scifact/test \
+    --indexed BAAI/bge-base-en-v1.5 --reference BAAI/bge-small-en-v1.5 \
+    --truncate 768,256 --quantize float32,int8,binary \
+    --seeds 1 --seed 0 --cache-dir ~/band-cache \
+    --out reports/band/exposure-m3.jsonl
+
+# the two three-attempt cells that decided SEEDS
+uv run --extra sentence-transformers --with ir-datasets --with model2vec \
+    python tools/exposure_band.py \
+    --corpus beir/scifact/test --corpus beir/nfcorpus/test \
+    --indexed BAAI/bge-base-en-v1.5 --reference BAAI/bge-small-en-v1.5 \
+    --seeds 3 --seed 0 --cache-dir ~/band-cache \
+    --out reports/band/exposure-spread.jsonl
+
 uv run python tools/exposure_band.py --summarise reports/band/exposure.jsonl
 ```

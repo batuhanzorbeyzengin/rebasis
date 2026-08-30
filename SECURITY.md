@@ -121,13 +121,18 @@ single number:
 rebasis expose --store <uri> --json
 ```
 
-Four things about it, and each of them is a limit rather than a feature:
+Five things about it, and each of them is a limit rather than a feature:
 
 - **It returns no translation.** No aligned vectors, no reconstructed text, no
   inversion — asserted by a test rather than promised in prose. A number grants
   nobody a capability; mini-vec2vec is published and installable already.
 - **It is an upper bound.** The measurement draws its reference half from your
   own corpus, which is a better position than any adversary has.
+- **On some indexes it is not one number.** The method is stochastic, so the
+  command runs three alignments. On one BEIR corpus those agreed to within
+  0.054; on another they returned 0.087, 0.624 and 0.034 for the same index. The
+  command says so when they disagree, and that sentence is the result on such an
+  index — a single low figure from a single run is not evidence of safety.
 - **It carries no band.** low/medium/high would be a policy threshold with no
   labelled harm to calibrate against, and this project does not ship those.
 - **The reference model must be local.** A hosted endpoint is refused, because

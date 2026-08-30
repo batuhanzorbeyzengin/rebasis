@@ -123,9 +123,9 @@ class TestItReturnsOnlyAScalar:
         assert any("upper bound" in warning for warning in result.warnings)
 
     def test_every_attempt_is_reported(self, world: dict[str, Any]) -> None:
-        """The spread across seeds is the finding, not a detail: measured over
-        32 cells its median is 0.159 and its maximum 0.969, so a single
-        attempt's number can be almost anything on some indexes."""
+        """The spread across attempts is part of the answer, not a detail: the
+        method is stochastic in three places, so one attempt's number is one
+        draw. `docs/exposure.md` reports what that spread is on real corpora."""
         result = _measure(world)
         payload = result.to_dict()
 

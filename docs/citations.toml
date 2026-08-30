@@ -197,6 +197,18 @@ the same orthogonal-solve-plus-assignment shape, with the assignment moved off
 the data points onto k-means centroids, on a CPU. Also the source of the
 reported finding that optimal-transport methods failed to beat a naive baseline
 on sentence embeddings in vec2vec's own oracle setup.
+
+**Read against v4 (17 February 2026), which is the version this project ships
+an implementation of.** There are four: v1 27 Sep 2025, v2 19 Oct 2025, v3
+6 Dec 2025, v4 17 Feb 2026. The abstract is unchanged across them and so is the
+method — v4 §3 describes the same three stages `rebasis.core.unpaired`
+implements, k-means centroids matched by a 2-OPT quadratic assignment on their
+similarity matrices, relative representations averaged in the absolute space
+into pseudo-pairs, Procrustes, then iterative refinement. What v4 adds is length
+(81 KB against v3's 26), including a "Choice of Hyperparameters" section that
+states them: s = 30 ensemble runs, c = 20 clusters, k = 50 neighbours,
+n_s = 10,000, c' = 500, alpha = 0.5. Those are what `DEFAULTS` now carries, and
+five of the eight it carried before this check were invented.
 """
 
 [papers."2605.16608"]

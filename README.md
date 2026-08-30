@@ -437,6 +437,11 @@ Using the tool without knowing what it cannot do costs more than not using it.
 - **The measurement has its own uncertainty.** ARR is computed from a sample, and
   results near a threshold are reported as borderline rather than rounded to a
   side.
+- **`expose` does not always return one number.** The alignment it measures is
+  stochastic, so it runs three and reports the best. On one BEIR corpus those
+  three agreed within 0.054; on another they were 0.087, 0.624 and 0.034. When
+  they disagree the command says so, and that sentence is the result — a low
+  figure from a single run is not evidence that an index resists the attack.
 
 ## Installation
 
