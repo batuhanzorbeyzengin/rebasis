@@ -109,13 +109,21 @@ __all__ = [
 #: How many documents the bridge is asked to recall for one query.
 #:
 #: `docs/cascade-band.md` measured N=100 and N=200 and found them a point or two
-#: apart at nDCG@10 — the first evidence that the curve flattens early, though
-#: *where* it flattens has not been measured. 100 is therefore the smaller claim
-#: and half the documents to re-embed on a cold cache, which is the number that
-#: decides whether the first query after a deploy takes 0.2 s or 0.4 s. It is
-#: also the depth ``probe`` reports the arrangement at, so a user who read that
-#: number gets the arrangement it described.
-CANDIDATES = 100
+#: apart at nDCG@10 — the curve flattens early, though *where* it flattens has
+#: not been measured. That made 100 the right default while the depth only
+#: decorated a report: the smaller claim, and half the documents to re-embed on
+#: a cold cache, which is what decides whether the first query after a deploy
+#: takes 0.2 s or 0.4 s.
+#:
+#: **It is 200 because the depth now decides.** ``probe`` recommends this
+#: arrangement, against a threshold calibrated on the 36-of-48 measured at 200,
+#: and it reports the retention and the per-query cost at the depth it measured.
+#: A user who took that recommendation and got a 100-deep cascade would be
+#: running an arrangement nothing in this repository has measured, told to
+#: expect the numbers of one that was. The two constants are the same choice and
+#: they move together; ``candidates=`` overrides it for a caller whose reranking
+#: budget says otherwise.
+CANDIDATES = 200
 
 #: Vectors the default in-memory cache holds before it evicts.
 #:
@@ -124,6 +132,17 @@ CANDIDATES = 100
 #: query log concentrates on the documents people actually ask about. A process
 #: that knows its working set is larger should say so; one that wants the cache
 #: to survive a restart wants :class:`DiskVectorCache`.
+#:
+#: **The premise has a measured exception.** `docs/cascade-band.md` §6 replayed
+#: 48 judged query logs at candidate depth 200: on 45 of them the working set
+#: fitted and the cache embedded each distinct document exactly once, and on
+#: three — one corpus, `cqadupstack/tex` — the union of the candidate sets ran
+#: to 53,000-65,000 vectors and the cache re-embedded up to 100,000. Where that
+#: happens, ``probe``'s ``candidate_reuse`` stops being a lower bound on the hit
+#: rate, because it counts distinct documents and a bounded cache does not keep
+#: them all. The working set is knowable before deploying:
+#: ``(1 - candidate_reuse) x candidates x queries`` on the log ``probe`` was
+#: given. Above this figure, :class:`DiskVectorCache`.
 MEMORY_CACHE_ENTRIES = 50_000
 
 #: Ceiling on one call into the embedder.

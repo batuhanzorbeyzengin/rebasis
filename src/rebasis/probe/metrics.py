@@ -71,9 +71,11 @@ __all__ = [
     "MIN_TAIL_QUERIES",
     "bootstrap_ci",
     "bootstrap_ratio_ci",
+    "candidate_reuse",
     "estimate_reindex_cost",
     "mrr_at_k",
     "ndcg_at_k",
+    "ndcg_per_query",
     "overlap_at_k",
     "recall_at_k",
     "recall_per_query",
@@ -97,6 +99,44 @@ def recall_per_query(retrieved: np.ndarray, relevant: Sequence[set[int]], k: int
         if rel
     ]
     return as_float32(values)
+
+
+def candidate_reuse(indices: np.ndarray) -> float | None:
+    """How much the candidate sets of different queries overlap.
+
+    ``1 - |union of the candidate sets| / (sum of their sizes)``. Zero when every
+    query retrieves an entirely different set of documents; approaching one when
+    the queries pile onto the same popular documents.
+
+    It is the missing half of the two-stage arrangement's price. That arrangement
+    re-embeds each query's candidate set, so what it costs is the number of
+    candidates that are **not** already cached — and a cache's hit rate is a
+    property of a query distribution rather than of a corpus. Given ``--queries``
+    the user has handed over a sample of that distribution, and the overlap
+    within it can be counted straight off the candidate sets the run already
+    computed: no extra model call, no extra search.
+
+    **It is a lower bound and must be read as one.** A running cache accumulates
+    across queries the sample does not contain and across time the sample does
+    not span, so a figure measured within one log understates the hit rate the
+    same log would achieve against a warm cache. That is the conservative
+    direction — the arrangement is priced as more expensive than it will be —
+    which is why a lower bound is usable where a guess is not.
+
+    On the same query set and an unbounded cache the two coincide *by
+    construction*: replaying those candidate sets in order embeds each distinct
+    document exactly once, so the miss count is the union's size and the
+    identity is arithmetic rather than a result. `docs/cascade-band.md` §6
+    measures the quantity that is not an identity — a sample's reuse against the
+    hit rate of the whole log — and this docstring exists so the distinction is
+    not lost.
+
+    Returns ``None`` when there are no candidates to count.
+    """
+    if indices.size == 0:
+        return None
+    distinct = int(np.unique(indices).size)
+    return 1.0 - distinct / float(indices.size)
 
 
 def recall_at_k(retrieved: np.ndarray, relevant: Sequence[set[int]], k: int) -> float:
@@ -333,8 +373,30 @@ def ndcg_at_k(
         Queries with none are skipped rather than scored zero, matching
         :func:`recall_at_k`.
     """
+    per_query = ndcg_per_query(retrieved, relevant, k, grades=grades)
+    return float(per_query.mean()) if per_query.size else 0.0
+
+
+def ndcg_per_query(
+    retrieved: np.ndarray,
+    relevant: Sequence[set[int]],
+    k: int,
+    *,
+    grades: Sequence[dict[int, float]] | None = None,
+) -> FloatArray:
+    """Per-query nDCG@k — the raw input to a bootstrap interval.
+
+    Split out of :func:`ndcg_at_k` rather than duplicated, because a mean and
+    its interval have to come from the same numbers: the truncation grid divides
+    one cell's nDCG by the reference's, and the interval on that ratio is a
+    *paired* bootstrap over both series. Recomputing the numerator from a second
+    implementation is how those two stop being paired.
+
+    Queries with no relevant document are skipped, matching
+    :func:`recall_per_query`, so the two series line up query for query.
+    """
     if retrieved.size == 0:
-        return 0.0
+        return as_float32([])
 
     # Precomputed once: the discount depends only on rank.
     discount = 1.0 / np.log2(np.arange(2, k + 2))
@@ -358,4 +420,4 @@ def ndcg_at_k(
         idcg = float((ideal * discount[: ideal.size]).sum())
         scores.append(dcg / idcg if idcg > 0 else 0.0)
 
-    return float(np.mean(scores)) if scores else 0.0
+    return as_float32(scores)

@@ -10,7 +10,17 @@ for explicitly.
 
 from __future__ import annotations
 
+from rebasis.report.comparison import render_comparison_html, render_comparison_markdown
+from rebasis.report.grid import render_grid_html, render_grid_markdown
 from rebasis.report.html import render_html
 from rebasis.report.markdown import render_markdown, summary_dict
 
-__all__ = ["render_html", "render_markdown", "summary_dict"]
+__all__ = [
+    "render_comparison_html",
+    "render_comparison_markdown",
+    "render_grid_html",
+    "render_grid_markdown",
+    "render_html",
+    "render_markdown",
+    "summary_dict",
+]

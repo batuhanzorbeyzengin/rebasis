@@ -115,13 +115,52 @@ claim is the one it leads with.
 
 That is `rebasis probe`'s claim, arrived at independently and scored the same
 way: does the cheap transform predict which model is better without paying for
-the expensive answer? Their 11 of 13 sits beside this project's 61 of 62
-([the band](bridge-band.md)) — though theirs is one converter trained across 14
-BEIR datasets and asked to generalise, and it predicts a *ranking* of two
-models, where `probe` fits per corpus and predicts whether bridging beats
-keeping the current model on a specific index. The convergence is the useful
-part: the case for treating an adapter as an instrument rather than a product
-has now been made twice, from opposite ends.
+the expensive answer?
+
+**The number that used to sit beside their 11 of 13 was 61 of 62, and it has
+been withdrawn** — it was an identity rather than a measurement
+([section 9](bridge-band.md#9-what-the-counting-is-worth)). The two claims are
+not directly comparable anyway: theirs is one converter trained across 14 BEIR
+datasets and asked to generalise, predicting a *ranking* of two models, where
+`probe` fits per corpus and predicts whether bridging beats keeping the current
+model on a specific index. What this project can put beside 11 of 13 is the
+quantity that survived the identity check — the estimate ranks runs by the
+margin they returned at Spearman ρ = +0.60 over 57 runs — and a ranking claim
+scored as a ranking is exactly what `rebasis compare` is for. The convergence is
+the useful part: the case for treating an adapter as an instrument rather than a
+product has now been made twice, from opposite ends.
+
+### ERA points the same way a third time, from the query side
+
+Maekawa et al., [*Align Then Adapt: Label-Efficient Adapter Learning for
+Asymmetric Dense Retrieval*](https://arxiv.org/abs/2604.03403)
+(arXiv:2604.03403, April 2026) is the mirror image of this project's problem
+rather than a competitor to it. Their setting is a **strong query embedder over
+a lightweight document index**: align the two spaces using unlabelled corpus
+documents, then adapt the aligned query representation with a small number of
+labelled query-document pairs. Over 126 retrieval tasks in 6 domains, and — the
+sentence that matters here — **without re-indexing the corpus.**
+
+Three things are worth separating.
+
+**The arrangement is the same one.** Leave the documents where they are, move
+the query. That is `Bridge`, arrived at from the opposite end: rebasis starts
+from an index whose model is out of date, ERA starts from a document embedder
+chosen to be cheap. Two motivations, one shape, and neither cites the other.
+
+**The alignment stage is the same operation.** Aligning two spaces from
+unlabelled corpus documents is what `fit` does on document pairs. What ERA adds
+is the second stage — a supervised adaptation of the query side — and that is a
+capability rebasis does not have and has not measured. Their reported gains
+(up to 8.2 nDCG@10 in the symmetric setting, over 12 in the asymmetric one) are
+gains from *both* stages together, so they are not a number this project's
+single-stage retention can be read against.
+
+**Its asymmetric case is the one rebasis is weakest on.** ADR 10 says retention
+is bounded by what the old space holds, and the wider the gap between the two
+models the less there is to carry. ERA's asymmetric setting is exactly that gap,
+and its answer to it is labelled data. That is a direction, not a result anyone
+here has reproduced.
 
 ---
 

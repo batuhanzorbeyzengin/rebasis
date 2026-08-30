@@ -257,8 +257,50 @@ def _command(*lines: str) -> None:
         console.print(f"  {line}", style="bold", markup=False, soft_wrap=True, highlight=False)
 
 
+def print_cascade_setup(result: Any, *, store: str, old: str, new: str) -> None:
+    """Print how to build the two-stage arrangement, where it is the answer.
+
+    Printed as `fit` plus the `Cascade(...)` call rather than as prose. The
+    decision this follows is often ``full_reindex``, whose next-step text says
+    an adapter cannot close the gap — true of the single stage and not of this
+    one, so leaving the reader to assemble the arrangement from the API
+    reference is how a recommendation becomes an unread paragraph.
+    """
+    decision = result.decision
+    if decision.arrangement != "cascade":
+        return
+    depth = decision.cascade_n
+    console.print()
+    console.print(
+        "[dim]Fit the adapter, then serve it as a recall stage — the index is not touched:[/dim]"
+    )
+    _command(
+        f"rebasis fit --store {store} \\",
+        f"    --old {old} --new {new} \\",
+        "    --out adapter.rbs",
+    )
+    _command(
+        "from rebasis.serve import Bridge, Cascade",
+        "from rebasis.store import open_store",
+        "",
+        "cascade = Cascade(",
+        f"    open_store({store!r}),",
+        '    Bridge.load("adapter.rbs"),',
+        "    new_embedder,",
+        *([] if depth is None else [f"    candidates={depth},"]),
+        ")",
+        'hits = cascade.search(new_embedder.encode([q], kind="query")[0], k=10)',
+    )
+
+
 def print_next_step_after_probe(result: Any, *, store: str, old: str, new: str) -> None:
     """Print the command this decision implies."""
+    if result.decision.arrangement == "cascade":
+        # The arrangement outranks the decision's own next step here: it is the
+        # answer the numbers support, and printing "reindex" underneath it would
+        # send the reader to the more expensive of two measured options.
+        print_cascade_setup(result, store=store, old=old, new=new)
+        return
     decision = result.decision.decision
     if decision == "no_upgrade_needed":
         console.print()
@@ -281,6 +323,237 @@ def print_next_step_after_probe(result: Any, *, store: str, old: str, new: str) 
         f"rebasis fit --store {store} \\",
         f"    --old {old} --new {new} \\",
         "    --out adapter.rbs",
+    )
+
+
+def write_comparison_report(result: Any, *, store_uri: str, report: Path | None) -> None:
+    """Write the comparison as HTML or Markdown, by the path's suffix."""
+    if report is None:
+        return
+    from rebasis.report import render_comparison_html, render_comparison_markdown
+
+    render = (
+        render_comparison_html if report.suffix.lower() == ".html" else render_comparison_markdown
+    )
+    report.parent.mkdir(parents=True, exist_ok=True)
+    # Through `atomic_write_text` for the reason `write_reports` gives, and more
+    # so here: a comparison is N embedding passes, and `write_text` truncates
+    # first, so a full disk or a Ctrl-C between the two takes the previous
+    # report with it. `tests/unit/test_write_discipline.py` caught this one.
+    atomic_write_text(report, render(result, store_uri=store_uri), private=False)
+    err_console.print(f"[dim]Report written to {report}[/dim]")
+
+
+def print_comparison_json(result: Any) -> None:
+    """The ranking on stdout, and nothing else."""
+    import json
+
+    console.print_json(json.dumps(result.to_dict(), default=str))
+
+
+def print_comparison(result: Any) -> None:
+    """The ranking as a table, with what the ordering is worth underneath it.
+
+    The caveat is not a footnote and is not optional. `compare` makes a stronger
+    claim than `probe` — which model is better, rather than whether bridging
+    pays — and the evidence for it is a rank correlation rather than an
+    accuracy. A table printed without that reads as a leaderboard.
+    """
+    from rich.table import Table
+
+    table = Table(title="Candidates", title_justify="left", header_style="bold")
+    table.add_column("Model")
+    table.add_column("vs. current", justify="right")
+    table.add_column("ARR", justify="right")
+    table.add_column("bridge", justify="right")
+    table.add_column("cascade", justify="right")
+    table.add_column("reindex", justify="right")
+    table.add_column("Decision")
+
+    for candidate in result.ranked():
+        decision = candidate.result.decision
+        marker = " [dim](round 1)[/dim]" if candidate.eliminated else ""
+        table.add_row(
+            f"{candidate.model}{marker}",
+            "—" if candidate.upgrade_gain is None else f"{candidate.upgrade_gain:.2f}x",
+            f"{decision.arr_at_k:.3f}",
+            _ratio(decision.bridge_advantage),
+            _ratio(decision.cascade_advantage),
+            _hours(candidate.result.reindex_cost),
+            (
+                f"{decision.decision}"
+                if decision.arrangement == "single_stage"
+                else f"{decision.decision} [green]+cascade[/green]"
+            ),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+    reference = result.reference.get("model") or "the index's own model"
+    console.print(
+        f"[dim]'vs. current' is how much better each candidate retrieves than "
+        f"{reference}, which is the model already in the index and is the "
+        f"reference rather than a candidate.[/dim]"
+    )
+    console.print(f"[yellow]{result.ranking_caveat}[/yellow]")
+    if result.remote_candidates:
+        console.print(
+            f"[yellow]Document text was sent off this machine for: "
+            f"{', '.join(result.remote_candidates)}.[/yellow]"
+        )
+
+
+def _ratio(value: float | None) -> str:
+    """A break-even, or an em dash where it could not be computed."""
+    return "—" if value is None else f"{value:.2f}x"
+
+
+def _hours(cost: dict[str, Any] | None) -> str:
+    """A reindex estimate as something a person reads."""
+    seconds = (cost or {}).get("seconds")
+    if not seconds:
+        return "—"
+    if seconds < 5400:  # noqa: PLR2004 - the point at which hours read better
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def write_grid_report(grid: Any, *, store_uri: str, report: Path | None) -> None:
+    """Write the truncation grid as HTML or Markdown, by the path's suffix."""
+    if report is None:
+        return
+    from rebasis.report import render_grid_html, render_grid_markdown
+
+    render = render_grid_html if report.suffix.lower() == ".html" else render_grid_markdown
+    report.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(report, render(grid, store_uri=store_uri), private=False)
+    err_console.print(f"[dim]Report written to {report}[/dim]")
+
+
+def print_grid_json(grid: Any) -> None:
+    """The grid on stdout, and nothing else."""
+    import json
+
+    console.print_json(json.dumps(grid.to_dict(), default=str))
+
+
+def print_grid(grid: Any) -> None:
+    """The grid as a table, retention over storage, cheapest acceptable cell last.
+
+    Two numbers per cell rather than one. Retention alone invites reading a
+    binary row as a disaster when the pattern that makes it useful — candidates
+    from the cheap codes, reordered by the full-precision vectors — is the
+    second number and is usually much higher.
+    """
+    from rich.table import Table
+
+    precisions = list(dict.fromkeys(cell.precision for cell in grid.cells))
+    by_dim: dict[int, dict[str, Any]] = {}
+    for cell in grid.cells:
+        by_dim.setdefault(cell.dim, {})[cell.precision] = cell
+
+    table = Table(
+        title=f"Retained of nDCG@{grid.k}  ·  rescored at {grid.rescore_at}  ·  storage",
+        title_justify="left",
+        header_style="bold",
+    )
+    table.add_column("dim")
+    for precision in precisions:
+        table.add_column(precision, justify="right")
+    for dim in sorted(by_dim, reverse=True):
+        label = f"{dim}" + (" (full)" if dim == grid.full_dim else "")
+        row = [label]
+        for precision in precisions:
+            cell = by_dim[dim].get(precision)
+            row.append(
+                "—"
+                if cell is None
+                else (
+                    f"{cell.retained:.3f} / {cell.retained_rescored:.3f}\n"
+                    f"[dim]{cell.storage:.3f}x[/dim]"
+                )
+            )
+        table.add_row(*row)
+
+    console.print()
+    console.print(table)
+    console.print(
+        f"[dim]Each cell: retained / retained after a full-precision rescore of the "
+        f"top {grid.rescore_at}, and the storage it costs as a fraction of today's.[/dim]"
+    )
+    console.print(f"[dim]{grid.simulation_note}[/dim]")
+
+    if grid.floor is not None:
+        chosen = grid.cheapest_above(grid.floor)
+        if chosen is None:
+            console.print(
+                f"[yellow]No cell retains {grid.floor:.0%}. The best is "
+                f"{max(c.retained for c in grid.cells):.3f}.[/yellow]"
+            )
+        else:
+            low, high = chosen.interval
+            straddles = low < grid.floor <= high
+            console.print()
+            console.print(
+                f"[bold green]Cheapest cell above {grid.floor:.0%}: "
+                f"{chosen.dim} dimensions at {chosen.precision}[/bold green] — "
+                f"retains {chosen.retained:.3f} "
+                f"[dim](95% {low:.3f}–{high:.3f})[/dim] for {chosen.storage:.3f}x "
+                f"the storage."
+            )
+            if straddles:
+                console.print(
+                    "[yellow]Its interval spans the floor, so this run cannot "
+                    "settle whether that cell clears it. Increase --sample.[/yellow]"
+                )
+    for warning in grid.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+def print_exposure_json(result: Any) -> None:
+    """The measurement on stdout, and nothing else."""
+    import json
+
+    console.print_json(json.dumps(result.to_dict(), default=str))
+
+
+def print_exposure(result: Any) -> None:
+    """One number, the pool it is relative to, and what it does not say.
+
+    No band. low/medium/high would be a classifier and the evidence does not
+    support one — `docs/exposure.md` says so at length and this print stays
+    short, because a caveat nobody reads is a caveat that is not there.
+    """
+    console.print()
+    attempts = ", ".join(f"{value:.3f}" for value in result.per_seed)
+    console.print(
+        f"  Alignability   [bold]{result.alignability:.3f}[/bold]  "
+        f"[dim]({result.pool:,} documents, mean rank {result.mean_rank:.1f})[/dim]"
+    )
+    if len(result.per_seed) > 1:
+        console.print(
+            f"  Attempts       {attempts}  [dim](the best of them is the figure "
+            f"above; the method is stochastic)[/dim]"
+        )
+    console.print(f"  Reference      {result.reference_model} [dim](local)[/dim]")
+    console.print(
+        f"  Sample         {result.n_sampled:,} of {result.n_total:,}  "
+        f"[dim]seed {result.seed}[/dim]"
+    )
+    console.print()
+    console.print(
+        f"An adversary holding only these vectors, plus a public embedding model "
+        f"over their own documents, aligned this index well enough to identify "
+        f"[bold]{result.alignability:.0%}[/bold] of a {result.pool:,}-document "
+        f"hold-out by its vector alone."
+    )
+    for warning in result.warnings:
+        console.print(f"  [yellow]{warning}[/yellow]")
+    console.print(
+        "[dim]There is no low/medium/high here: banding this number would be a "
+        "classifier, and the evidence does not support one. What the number means "
+        "— and the four things it does not say — are in docs/exposure.md.[/dim]"
     )
 
 
@@ -326,11 +599,24 @@ def print_result(result: Any) -> None:
     # when it is vacuous: "≥ -0.4 cosine" is not a fact anybody can use.
     cascade = decision.cascade_advantage
     if cascade is not None and decision.cascade_arr is not None:
-        console.print(
-            f"  cascade     [bold]{decision.cascade_arr:.3f}[/bold] retained at candidate "
-            f"depth  [dim](break-even {cascade:.2f}x if the new model reranks; "
-            f"measured, not served)[/dim]"
+        depth = "" if decision.cascade_n is None else f"@{decision.cascade_n}"
+        served = (
+            "[green]recommended[/green]"
+            if decision.arrangement == "cascade"
+            else "measured, not recommended"
         )
+        console.print(
+            f"  cascade{depth:<5} [bold]{decision.cascade_arr:.3f}[/bold] retained at candidate "
+            f"depth  [dim](break-even {cascade:.2f}x if the new model reranks; "
+            f"{served})[/dim]"
+        )
+        per_query = decision.cascade_embeddings_per_query
+        if per_query is not None and decision.candidate_reuse is not None:
+            console.print(
+                f"              [dim]~{per_query:.0f} documents embedded per query "
+                f"({decision.candidate_reuse:.0%} of each candidate set is already "
+                f"cached; a lower bound)[/dim]"
+            )
     geometry = getattr(result, "geometry", None)
     if geometry is not None and geometry.informative:
         console.print(

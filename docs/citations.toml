@@ -106,10 +106,19 @@ Benchmarking Patent Embeddings: A Multi-Task Evaluation of 22 Models Across \
 Retrieval, Classification, and Clustering"""
 authors = "Yousefiramandi, Cooney"
 why = """
-Nothing is claimed from it. This is the worked example inside
-`tools/check_citations.py`: the identifier was cited for a claim about rerankers
-and it is a patent embedding benchmark. Recorded so that the check verifies its
-own example rather than asserting it.
+Two uses, and the first is the reason the entry existed before the second.
+
+It is the worked example inside `tools/check_citations.py`: this identifier was
+once cited for a claim about rerankers and it is a patent embedding benchmark.
+Recorded so the check verifies its own example rather than asserting it.
+
+`docs/truncation-band.md` then claims something real from it — section 4.11 and
+Table 18, five models truncated and L2-renormalised, retaining a mean of 95.9%
+at 512 dimensions and 91.3% at 256, together with the stated trend that models
+of higher original dimension truncate more gracefully. That trend is what the
+band here extends: every model measured in this repository is 384 or 768
+dimensional, below the bottom of their 2,048-4,096 range, and degrades faster by
+fraction exactly as the trend predicts.
 """
 [papers."2003.11942"]
 title = "Towards Backward-Compatible Representation Learning"
@@ -215,4 +224,20 @@ region-specific ones — which is the direction this project's own `tail_arr`
 survey points, from the other end. It studies token embeddings in language
 models, not document embeddings in retrieval models, and the roadmap says so
 where it cites it.
+"""
+
+[papers."2604.03403"]
+title = """
+Align Then Adapt: Label-Efficient Adapter Learning for Asymmetric Dense \
+Retrieval"""
+authors = "Maekawa, Aminnaseri, Pezeshkpour, Hruschka"
+why = """
+Cited in `docs/related-work.md` and `docs/model-selection.md` as the mirror image
+of this project's problem: it aligns a strong query embedder to a lightweight
+document index, then adapts the query side with a small number of labelled pairs,
+over 126 retrieval tasks in 6 domains and without re-indexing the corpus. The
+convergence is the point — the same "leave the index, move the query" arrangement
+arrived at from the opposite end — and it is cited for the direction of the
+field rather than as evidence for any number here. Recorded under the title arXiv
+carries, which is not the one an internal planning note gave it.
 """

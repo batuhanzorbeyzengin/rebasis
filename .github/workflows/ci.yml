@@ -129,6 +129,35 @@ jobs:
     name: tests and coverage floors
     timeout-minutes: 25
     runs-on: ubuntu-latest
+    # The one backend that needs something outside the process. Five of the six
+    # stores are a file or an embedded library; pgvector is the store most teams
+    # actually run, and it is a server. Without this the pgvector layer would
+    # skip here — and a suite that skips a backend reports the same green
+    # summary as one that ran it, which is how this suite once claimed to cover
+    # five stores it had never opened.
+    #
+    # Pinned by digest for the same reason every `uses:` above it is pinned by
+    # SHA: a tag is a name somebody else can repoint. `0.8.6-pg16` at the time
+    # of pinning; `docker buildx imagetools inspect pgvector/pgvector:0.8.6-pg16`
+    # prints the digest to move it to.
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: rebasis
+          POSTGRES_PASSWORD: rebasis
+          POSTGRES_DB: rebasis_test
+        ports:
+          - 5432:5432
+        # Without a health check the job races the server's first start and the
+        # first connection is refused rather than slow.
+        options: >-
+          --health-cmd "pg_isready -U rebasis -d rebasis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      REBASIS_TEST_POSTGRES: postgresql://rebasis:rebasis@127.0.0.1:5432/rebasis_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -232,6 +261,26 @@ jobs:
     name: lowest direct dependencies
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    # Same service as the coverage job, for the reason the comment there gives
+    # and one more: the `psycopg` floor is found by running the suite against
+    # it, the way the chroma, qdrant and faiss floors were. A lower bound
+    # nothing runs against is a guess with a version number on it.
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: rebasis
+          POSTGRES_PASSWORD: rebasis
+          POSTGRES_DB: rebasis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rebasis -d rebasis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      REBASIS_TEST_POSTGRES: postgresql://rebasis:rebasis@127.0.0.1:5432/rebasis_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -247,7 +296,7 @@ jobs:
         # up not working on the versions it claims to support.
         run: |
           uv venv --python 3.12
-          uv pip install -e ".[chroma,lancedb,qdrant,sqlite-vec,faiss]" \
+          uv pip install -e ".[chroma,lancedb,qdrant,sqlite-vec,faiss,pgvector]" \
             --resolution lowest-direct
           uv pip install pytest pytest-randomly hypothesis
       - name: the floors hold

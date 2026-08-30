@@ -36,9 +36,18 @@ evidence behind it:
 
 What decides between them is not ARR alone but the **break-even** —
 `ARR × upgrade_gain`, the adapter's quality times how much better the new model
-actually is on your corpus. Across 62 measured pairs its sign matched the
-outcome 61 times, where the ARR bands alone matched 10 of 15 — and 33 of those
-62 are corpora the rule was frozen before it ever saw.
+actually is on your corpus.
+
+**The count this page used to quote here has been withdrawn.** "61 of 62" was
+an identity: read off one run's own scores, `ARR × upgrade_gain` is
+`(bridged / reindex) × (reindex / status quo)`, which is the same inequality as
+the outcome it was being scored against, so it could not have disagreed.
+What survives that check is a rank correlation rather than an accuracy — over
+the 57 runs the repository still holds, the estimate orders them by the margin
+they actually returned at **Spearman ρ = +0.60, p ≈ 1e-6**
+([section 9](bridge-band.md#9-what-the-counting-is-worth)). The quantity still
+decides and the bands are still where they were; what changed is how much
+confidence a reader should take from a proportion.
 
 It needs a real query log. Without one rebasis reports how well an adapter
 bridges and declines to recommend, because that is all it can honestly do.
@@ -59,6 +68,17 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
   its own. When it needs to know which records it has already moved, it reads
   its own manifest rather than tagging yours.
 
+## Three more questions it answers
+
+`probe` asks whether to change the model. Three commands ask adjacent questions
+about the same index, from the same sample, without rebuilding anything.
+
+| | question |
+|---|---|
+| [`rebasis compare`](reference/cli.md#rebasis-compare) | **which** model, out of several — an ordering rather than a verdict. Read [what the ordering is worth](model-selection.md) first: on sixteen corpora it did not beat the published leaderboard. |
+| [`probe --truncate`](truncation-band.md) | what a **cheaper representation** of this index would cost. No model change and no adapter — the same vectors held more narrowly. int8 turns out to be free; binary is not, until the full-precision vectors reorder its candidates. |
+| [`rebasis expose`](exposure.md) | how **alignable** this index is to a space somebody else already has. Returns a number and no translation. |
+
 ## Where to go next
 
 - [Getting started](getting-started.md) — the five-minute version
@@ -66,8 +86,15 @@ See [when bridging is worth it](bridge-band.md) for the measurement.
 - [The decision rule](concepts/decision-rule.md) — how the bands were chosen
 - [Migration and rollback](guides/migration.md) — the command that writes
 - [When bridging is worth it](bridge-band.md) — 62 runs, and the one it got wrong
-- [The bridge as a recall stage](cascade-band.md) — 48 runs on the assumption
-  underneath that band
+- [The bridge as a recall stage](cascade-band.md) — 57 runs on the assumption
+  underneath that band, including nine on the hard-negative tasks where the
+  squeeze turns out to be much weaker
+- [Which model, on your corpus](model-selection.md) — 16 corpora, and the
+  measurement where the published leaderboard beat the tool
+- [What a cheaper index costs](truncation-band.md) — 48 grids, and why int8 is
+  free while a deep truncation is not
+- [How alignable an index is](exposure.md) — what `rebasis expose` measures, and
+  the four things it does not say
 - [What a migration does to the index](index-health.md) — the check the read-back
   cannot do
 - [Merging two embedding spaces](mixed-space-fusion.md) — serving an index that

@@ -15,6 +15,8 @@ from __future__ import annotations
 import html
 from typing import TYPE_CHECKING
 
+from rebasis.probe.decision import CASCADE_RATIONALE
+
 if TYPE_CHECKING:
     from rebasis.probe.runner import ProbeResult
 
@@ -163,6 +165,8 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
 
     parts.extend(f'<div class="note">{html.escape(w)}</div>' for w in decision.warnings)
 
+    parts.extend(_cascade_html(result))
+
     if result.baselines:
         parts.extend(["<h3>What the alternatives look like</h3>", '<div class="wrap"><table>'])
         parts.append("<tr><th>Approach</th><th>ARR</th><th>What it means</th></tr>")
@@ -229,6 +233,66 @@ def render_html(result: ProbeResult, *, store_uri: str = "", title: str = "") ->
         ]
     )
     return "".join(parts)
+
+
+def _cascade_html(result: ProbeResult) -> list[str]:
+    """The two-stage arrangement, with its price beside it.
+
+    Rendered as a verdict block rather than a paragraph when it is recommended,
+    for the same reason the Markdown report gives it its own heading: the run
+    this matters most on is one whose decision reads ``full_reindex``, and a
+    win printed as a footnote to "rebuild your index" is a win nobody acts on.
+    """
+    decision = result.decision
+    advantage = decision.cascade_advantage
+    if advantage is None or decision.cascade_arr is None:
+        return []
+
+    recommended = decision.arrangement == "cascade"
+    depth = "N" if decision.cascade_n is None else str(decision.cascade_n)
+    single = decision.bridge_advantage
+    comparison = (
+        f" — against {single:.2f}x when the bridge produces the final ranking"
+        if single is not None
+        else ""
+    )
+    parts = []
+    if recommended:
+        parts.append(
+            '<div class="verdict good">'
+            "<h2>Recommended: keep the index, add a rerank stage</h2>"
+            f'<p class="rationale">{html.escape(CASCADE_RATIONALE)}</p></div>'
+        )
+    else:
+        parts.append("<h3>If the bridge fed a rerank instead</h3>")
+    parts.append(
+        f"<p>Used as a <strong>recall stage</strong> — the adapter retrieves a "
+        f"candidate set of {html.escape(depth)} and the new model reorders it in "
+        f"its own space — this adapter retains <strong>{decision.cascade_arr:.3f}"
+        f"</strong> of what a full reindex finds at that depth, putting the "
+        f"break-even at <strong>{advantage:.2f}x</strong>{html.escape(comparison)}.</p>"
+    )
+    reuse = decision.candidate_reuse
+    per_query = decision.cascade_embeddings_per_query
+    if reuse is not None and per_query is not None:
+        parts.append(
+            f"<p><strong>It costs about {per_query:.0f} documents embedded per "
+            f"query.</strong> Your query log's candidate sets overlap by "
+            f"{reuse:.0%}, so that share of each set is already cached and only "
+            f"the rest is re-embedded. The overlap is a <em>lower bound</em> — a "
+            f"running cache accumulates across queries this sample does not "
+            f"contain — so the real figure is at or below this one, "
+            f"<em>provided the cache can hold the working set</em>. Three runs "
+            f"in 48 ran past the default in-memory cache's 50,000 entries and "
+            f"paid up to 6 points more; a disk cache has no such ceiling.</p>"
+        )
+    else:
+        parts.append(
+            '<div class="note">Not recommended on this run: what the arrangement '
+            "costs turns on how often a candidate is already cached, and only a "
+            "real query log samples that. Re-run with --queries.</div>"
+        )
+    return parts
 
 
 def _how_to_read_html(result: ProbeResult) -> str:

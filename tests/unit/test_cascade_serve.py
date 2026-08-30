@@ -40,6 +40,7 @@ from rebasis.embed import PrecomputedEmbedder
 from rebasis.errors import CapabilityMissing
 from rebasis.serve.bridge import Bridge
 from rebasis.serve.cascade import (
+    CANDIDATES,
     Cascade,
     CascadeStats,
     DiskVectorCache,
@@ -64,10 +65,12 @@ PROBES = 40
 #: Scale of the detail the old space lost.
 #:
 #: Tuned to the regime the measurement is about, and measured across it: at 0.20
-#: a document's own bridged query recalls it into the top 100 in 40 probes out
-#: of 40 and ranks it first in 6. At 0.09 the bridge already ranks it first 31
-#: times, so the control below stops being a control; at 0.50 the candidate set
-#: starts losing the answer and the rerank has nothing to work with.
+#: a document's own bridged query recalls it into the candidate set in 40 probes
+#: out of 40 and ranks it first in 6. At 0.09 the bridge already ranks it first
+#: 31 times, so the control below stops being a control; at 0.50 the candidate
+#: set starts losing the answer and the rerank has nothing to work with. Those
+#: figures were measured at a depth of 100; the default is now 200, which can
+#: only recall more, so the regime they describe still holds.
 OLD_SPACE_NOISE = 0.20
 
 NEW = EncodingProfile(model_id="new/model", dim=DIM)
@@ -293,7 +296,11 @@ class TestTheCache:
             for candidate in plan_gc(state, now=time.time() + 40 * DAY).candidates
             if candidate.category == "cache"
         ]
-        assert len(collected) == 100
+        # One file per document the candidate set held, which is the default
+        # depth rather than a number of its own. Asserting the literal is how
+        # raising CANDIDATES from 100 to 200 broke this test rather than the
+        # behaviour it describes.
+        assert len(collected) == CANDIDATES
 
     def test_a_cache_that_cannot_write_does_not_fail_the_query(
         self, world: dict[str, Any], tmp_path: Path
@@ -309,7 +316,7 @@ class TestTheCache:
 
         assert len(hits) == 10
         assert hits[0].id == world["ids"][0]
-        assert cache.write_failures == 100
+        assert cache.write_failures == CANDIDATES
 
 
 class TestWhatCannotBeReEmbedded:

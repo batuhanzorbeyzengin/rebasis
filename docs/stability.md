@@ -132,7 +132,7 @@ Being specific about this is the point of the page.
 |---|---|---|---|
 | **OS** | Linux; macOS for the layers a core install can run | Linux | **Windows** |
 | **Python** | 3.12 | 3.12 | 3.13 in CI |
-| **Stores** | Chroma, LanceDB, sqlite-vec, Qdrant, FAISS, in-memory — the same contract suite and a migrate-and-rollback cycle for each | as CI | Qdrant in server mode beyond the local-mode suite |
+| **Stores** | pgvector, Chroma, LanceDB, sqlite-vec, Qdrant, FAISS, in-memory — the same contract suite and a migrate-and-rollback cycle for each | as CI | Qdrant in server mode beyond the local-mode suite |
 | **Embedders** | in-memory and precomputed | sentence-transformers, fastembed on real models | ollama, llama-cpp, hosted OpenAI-compatible endpoints |
 | **Scale** | hundreds of records | up to 100,000 for index health | **millions — see below** |
 
@@ -149,7 +149,16 @@ a process holding both aborts before either library does any work. The
 `contract` on `macos-latest` as well as `ubuntu-latest` — which covers the
 storage layer, where the platforms actually differ. What it does not cover is a
 real store on macOS: with no extras installed, the five live backends skip and
-only the in-memory one runs.
+only the in-memory one runs — pgvector included, which needs a server the macOS
+job does not stand up.
+
+**pgvector is gated against a real PostgreSQL.** It is the only backend that
+needs something outside the process, and CI runs a `pgvector/pgvector` image
+pinned by digest as a service on both the coverage job and the lowest-direct
+job — the second so the `psycopg` floor is found by running the suite against
+it, the way the chroma, qdrant and faiss floors were. Without the service the
+pgvector layer would skip, and a suite that skips a backend reports the same
+green summary as one that ran it.
 
 **Windows has never run.** The storage layer has documented Windows-specific
 behaviour — `os.replace` is used precisely because `os.rename` is not atomic over

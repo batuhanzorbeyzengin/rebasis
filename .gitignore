@@ -103,3 +103,5 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+docs/_local/plane/

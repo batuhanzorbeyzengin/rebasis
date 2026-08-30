@@ -35,6 +35,7 @@ from rebasis.probe.groundtruth import (
 from rebasis.probe.metrics import (
     bootstrap_ci,
     bootstrap_ratio_ci,
+    candidate_reuse,
     mrr_at_k,
     ndcg_at_k,
     overlap_at_k,
@@ -66,20 +67,25 @@ CALIBRATION_FRACTION = 1 / 3
 #: one or two points would be noise dressed up as a correction.
 _MIN_CALIBRATION_POINTS = 2
 
-#: Candidate-set size at which the two-stage arrangement is reported.
+#: Candidate-set depth at which the two-stage arrangement is measured.
 #:
 #: A bridge does not have to produce the final ranking. It can produce a
 #: *candidate set* which the new model then reorders in its own space, and the
 #: only thing that arrangement can lose is a relevant document that never
 #: reached the top N. So it is bounded by recall@N rather than by nDCG@10 —
-#: measured across 24 runs, retention 0.697 at nDCG@10 against 0.889 at
-#: recall@200, and bridging beat doing nothing in 0 of 24 against 16 of 24
+#: measured across 48 runs, retention 0.717 at nDCG@10 against 0.893 at
+#: recall@200, and bridging beat doing nothing in 1 of 48 against 36 of 48
 #: (`docs/cascade-band.md`).
 #:
-#: 100 rather than 200 because it is the smaller claim: the measured advantage
-#: at 100 and at 200 differed by a few points, and 100 is half the documents to
-#: re-embed on the hot path.
-CASCADE_N = 100
+#: **200, and it was 100.** While the depth only decorated a report the smaller
+#: claim was the right default: 100 is half the documents to re-embed on the hot
+#: path and the two depths scored a point or two apart. It now *decides* — the
+#: rule branches on ``cascade_advantage`` — and a threshold calibrated at one
+#: depth applied to a number computed at another is two measurements wearing one
+#: name. The 36 of 48 in `docs/cascade-band.md` is measured at 200, so that is
+#: the depth the rule runs on, and ``--cascade-n`` exists because candidate depth
+#: is bound to a reranker budget rather than to this constant.
+CASCADE_N = 200
 
 
 @dataclass(slots=True)
@@ -106,6 +112,11 @@ class CandidateMetrics:
     #: retrieves at the same depth. This is what bounds a two-stage
     #: arrangement, and it is systematically higher than ``arr``.
     cascade_arr: float | None = None
+    #: How much this candidate's candidate sets overlap across the queries —
+    #: the lower bound on a two-stage arrangement's cache hit rate. ``None``
+    #: unless the queries were a real log: held-out documents and synthesised
+    #: questions are not a query distribution, and their overlap prices nothing.
+    candidate_reuse: float | None = None
     used_csls: bool = False
     n_params: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
@@ -129,6 +140,9 @@ class CandidateMetrics:
             ),
             "tail_arr": None if self.tail_arr is None else round(self.tail_arr, 4),
             "cascade_arr": None if self.cascade_arr is None else round(self.cascade_arr, 4),
+            "candidate_reuse": (
+                None if self.candidate_reuse is None else round(self.candidate_reuse, 4)
+            ),
             "used_csls": self.used_csls,
             "n_params": self.n_params,
         }
@@ -243,6 +257,7 @@ def evaluate_candidate(  # noqa: PLR0913 - one argument per measurement input
             best_indices, best_scores, best_arr = csls_indices, csls_scores, csls_arr
 
     cascade_arr = _cascade_arr(best_indices, ground_truth, cascade_k, oracle_recall_at_cascade)
+    reuse = _candidate_reuse(best_indices, ground_truth, cascade_k)
     best_indices = best_indices[:, :k]
     best_scores = best_scores[:, :k]
     per_query = recall_per_query(best_indices, ground_truth.relevant_sparse, k)
@@ -258,6 +273,7 @@ def evaluate_candidate(  # noqa: PLR0913 - one argument per measurement input
         score_shift_raw=score_shift_ks(best_scores, ground_truth.oracle_scores),
         tail_arr=_tail(per_query, query_clusters, ground_truth),
         cascade_arr=cascade_arr,
+        candidate_reuse=reuse,
         used_csls=used_csls,
         n_params=candidate.adapter.n_params(),
         extras={"arr_without_csls": plain_arr},
@@ -303,6 +319,31 @@ def _cascade_arr(
         return None
     recall = recall_at_k(indices[:, :cascade_k], ground_truth.relevant_sparse, cascade_k)
     return recall / oracle_recall
+
+
+#: Tiers whose "queries" are a sample of a real query distribution.
+#:
+#: T0 stands held-out documents in for queries and T2 synthesises them from the
+#: documents themselves. Both produce candidate sets, and the overlap between
+#: those sets describes the sampling scheme rather than anybody's traffic — so
+#: pricing a cache with it would be inventing the one number the arrangement
+#: was never able to price. T1U is unjudged, which costs it an upgrade estimate
+#: and not the query text: the questions are still the ones people asked.
+_REAL_QUERY_TIERS = frozenset({"t1", "t1u"})
+
+
+def _candidate_reuse(
+    indices: np.ndarray, ground_truth: GroundTruth, cascade_k: int | None
+) -> float | None:
+    """The overlap between candidate sets, where the queries are real ones.
+
+    Gated on the tier rather than computed always, because the quantity is only
+    a lower bound on a cache hit rate when the queries it was counted over are a
+    sample of the traffic. See :data:`_REAL_QUERY_TIERS`.
+    """
+    if cascade_k is None or ground_truth.tier not in _REAL_QUERY_TIERS:
+        return None
+    return candidate_reuse(indices[:, :cascade_k])
 
 
 def _tail(
@@ -372,6 +413,7 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
     resources: dict[str, Any] | None = None,
     reindex_cost: dict[str, Any] | None = None,
     cascade_k: int | None = CASCADE_N,
+    can_read_text: bool | None = None,
 ) -> ProbeResult:
     """Run the full probe pipeline and return a decision.
 
@@ -398,10 +440,14 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
             why this is measured rather than assumed either way.
         query_clusters: Cluster of each query, when the sample was stratified.
             Enables ``tail_arr`` — the heterogeneous-drift signal.
-        cascade_k: Candidate-set depth at which to report the two-stage
-            arrangement, or ``None`` to skip it. Widens the search and adds one
-            metric; every metric a decision is taken on is still computed at
-            ``k``.
+        cascade_k: Candidate-set depth at which to measure the two-stage
+            arrangement, or ``None`` to skip it. Widens the search and adds two
+            metrics; every metric the *band* is read from is still computed at
+            ``k``, so widening cannot move a band.
+        can_read_text: Whether the store this sample came from returns the text
+            of a record. The two-stage arrangement re-embeds its candidates, so
+            without it the arrangement cannot be recommended however well it
+            scores. ``None`` — the caller did not say — blocks it too.
         resources: What the run cost so far, for the summary.
         reindex_cost: Estimated cost of a full reindex.
     """
@@ -525,9 +571,13 @@ def run_probe(  # noqa: PLR0913 - one argument per pipeline stage
             # A synthesised task the retriever solves every time cannot tell two
             # models apart, so the upgrade estimate built on it is not one.
             estimate_uninformative=bool(ground_truth.metadata.get("task_too_easy")),
-            # What the same adapter would retain feeding a rerank. Reported and
-            # not acted on — see `DecisionResult.cascade_advantage`.
+            # What the same adapter would retain feeding a rerank, and — with
+            # the two below — what it would cost to serve. Together they are
+            # what sets `arrangement`.
             cascade_arr=best_metrics.cascade_arr,
+            candidate_reuse=best_metrics.candidate_reuse,
+            cascade_n=cascade_k,
+            can_read_text=can_read_text,
         )
         _annotate(decision_span, decision, best_metrics)
 

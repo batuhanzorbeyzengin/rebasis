@@ -62,6 +62,13 @@ you the adapter, which is not the same as how often it was *right*. The accuracy
 version of that count turned out to be an algebraic identity and
 [has been withdrawn](#the-decision-rule).
 
+Read the count itself with one more caveat. **Four of those twelve are runs whose
+numbers no longer reproduce**: the four held-out crossings
+[section 8](docs/bridge-band.md#the-one-miss-is-where-the-rule-says-it-is-uncertain)
+lists were written from an artifact the repository no longer holds, and on the
+rows that are here none of the four crosses the break-even at all. So twelve is
+the published figure and eight is what the surviving rows support.
+
 ---
 
 ## What rebasis adds
@@ -125,6 +132,18 @@ Bridging recovers a mean of about **0.72** of a full reindex, and is worth doing
 in roughly one run in five of those measured. If a number sounds better than
 that, check which measurement produced it.
 
+**The adapter is weak as a product and stronger as an instrument** — and the
+second half of that sentence has now been tested rather than asserted.
+Google's [Embedding-Converter](https://aclanthology.org/2025.acl-long.1122.pdf)
+(ACL 2025) reaches the same framing from the opposite end: a cheap transform
+used to *predict* which model is better, on 11 of 13 datasets. `rebasis compare`
+is that claim made explicitly, and it was scored against the null anybody
+actually uses — pick whatever tops the published MTEB table. Over 16 corpora
+with three candidates each, **the null wins: 14 of 16 against 9 of 16.** The
+command ships reporting a ranking and a caveat rather than a winner, and
+[which model, on your corpus](docs/model-selection.md) has both numbers, what
+the ordering does carry, and how it moves with sample size.
+
 ## Status: 0.1
 
 The first released version is `0.1`, and the version number is the honest part
@@ -176,6 +195,15 @@ expensive part**, and how long that takes is a property of your model or API
 rather than of rebasis.
 
 ```bash
+# 0. Optional: which model, before deciding *whether*. Every candidate is
+#    scored on one sample, one split and one query set — the index's own model
+#    is the reference rather than a row. Read what the ordering is worth first:
+#    on 16 corpora it did not beat the published MTEB table on top-1.
+rebasis compare --store chroma:///path/to/db#notes \
+  --old sentence-transformers/all-MiniLM-L6-v2 \
+  --candidates BAAI/bge-small-en-v1.5,BAAI/bge-base-en-v1.5 \
+  --queries queries.jsonl
+
 # 1. Diagnose. What do I actually lose if I switch?
 rebasis probe --store chroma:///path/to/db#notes \
   --old sentence-transformers/all-MiniLM-L6-v2 --new BAAI/bge-base-en-v1.5 \
@@ -197,6 +225,12 @@ rebasis fit --store chroma:///path/to/db#notes \
 
 rebasis migrate --adapter adapters/forward.rbs \
   --store chroma:///path/to/db#notes --priority access --limit 5000
+
+# 5. A different question about the same index: what would a *cheaper*
+#    representation of it cost? No candidate model and no adapter — the
+#    reference is the index's own full-width, float32 state.
+rebasis probe --store chroma:///path/to/db#notes \
+  --truncate 768,512,256,128 --quantize float32,int8,binary --floor 0.95
 
 # Stop it at a batch boundary; pick it up where it stopped.
 rebasis pause <job-id>
@@ -283,13 +317,21 @@ Full workings, including the runs where it was wrong:
 
 ### Three findings worth knowing about
 
-**The band widens if the bridge only has to recall.** Every number above assumes
-the bridge produces the final ranking. If it instead produces a candidate set
-that the new model reorders in its own space, it is bounded by recall@N rather
-than nDCG@10 — a weaker requirement. Measured over **48 runs on sixteen
-corpora**: single-stage bridging beat doing nothing in **1**, a two-stage
-arrangement in **36** — and in 36 of the 37 runs where a reindex was genuinely
-an upgrade. `probe` reports what your adapter would retain that way, and
+**The band widens if the bridge only has to recall, and `probe` now recommends
+that arrangement.** Every number above assumes the bridge produces the final
+ranking. If it instead produces a candidate set that the new model reorders in
+its own space, it is bounded by recall@N rather than nDCG@10 — a weaker
+requirement. Measured over **48 runs on sixteen corpora**: single-stage bridging
+beat doing nothing in **1**, a two-stage arrangement in **36** — and in 36 of
+the 37 runs where a reindex was genuinely an upgrade.
+
+What kept that out of the recommendation was a price, not a doubt: the
+arrangement re-embeds N documents per query, and how many of those are already
+cached is a property of your traffic rather than of your corpus. Given
+`--queries` it is a property of a file you handed over, and `probe` counts it —
+the overlap between your query log's own candidate sets, reported as the lower
+bound it is. So a run whose single stage loses now says so **and** names the
+arrangement that wins, with the documents-per-query it will cost.
 `rebasis.serve.Cascade` serves it. [The measurement](docs/cascade-band.md).
 
 **A default migration costs no measurable retrieval quality.** Rewriting vectors
@@ -324,6 +366,7 @@ in how much work went into the adapter.
 
 | Store | Read | Text | `migrate` | Filters | Notes |
 |---|---|---|---|---|---|
+| **pgvector** | ✅ | ◐ | ✅ | ✅ | Your own Postgres. One batch is one **transaction**, so a half-written batch is not a state. Name the columns in the URI; the column *type* decides the rest — `halfvec` rounds past `migrate`'s tolerance, `bit` and `sparsevec` are refused. |
 | **Chroma** | ✅ | ✅ | ✅ | ✅ | Tested from 0.5.5 through 1.x, across the Rust rewrite. |
 | **LanceDB** | ✅ | ✅ | ✅ | ✅ | Text comes from a column you name in the URI. |
 | **sqlite-vec** | ✅ | ✅ | ✅ | — | One file, no server, no dependencies. |
@@ -333,7 +376,17 @@ in how much work went into the adapter.
 
 Every row above runs the same store contract suite on every commit, plus a
 migrate-and-rollback test that checks the vectors really changed, the record
-count did not, the text survived and the originals came back.
+count did not, the text survived and the originals came back. pgvector runs
+against a real PostgreSQL stood up as a CI service, not a fake — a suite that
+skips a backend reports the same green summary as one that ran it.
+
+**pgvector is the one that changes what the safety story rests on.** Everywhere
+else `migrate`'s batch integrity is four mechanisms rebasis built: a shadow copy,
+a read-back, a fresh-connection check and `rollback`. On Postgres the batch is a
+transaction — it lands whole or it does not exist. The shadow copy stays, because
+a transaction rolls back one batch and `rollback <job-id>` rolls back a finished
+job three days later. [The guide](docs/guides/pgvector.md) says which layer holds
+which.
 
 **FAISS is the one to read twice.** It is an index, not a database: it stores
 vectors and returns row numbers, so ids and text stay yours to keep in a

@@ -171,15 +171,19 @@ The bottom row is the check that this does not simply flatter every run:
 — and both figures stay below the break-even, because there is nothing to
 deliver and neither arrangement invents any.
 
-**It is reported and not acted on**, and the reason is narrower than it was.
-`rebasis.serve.Cascade` serves this arrangement, so the objection is no longer
-that the tool cannot do it. It is that the decision rule weighs quality against
-cost, and this arrangement's cost turns on how often a candidate is already
-cached — a property of a query log, not of the corpus a probe reads.
-`bridge_advantage` costs a matrix multiply whatever the traffic. So the rule
-runs on the number it can price and reports the other for a reader who can
-price it. That widening the search leaves ARR, its interval, nDCG, MRR and the
-decision bit-for-bit identical is itself a test.
+**It is now acted on**, and [section 6](#6-pricing-the-cache) is why. The
+objection was never that the tool could not serve the arrangement —
+`rebasis.serve.Cascade` has done that since 0.1 — but that the decision rule
+weighs quality against cost, and this arrangement's cost turns on how often a
+candidate is already cached, which is a property of a query log rather than of
+the corpus a probe reads. A run given `--queries` *has* a query log, and the
+overlap between the candidate sets it produces can be counted straight off the
+search above. So `probe` prices it, and where the price is not countable the
+arrangement stays reported rather than recommended.
+
+That widening the search leaves ARR, its interval, nDCG, MRR and the decision
+bit-for-bit identical is itself a test, and it still holds: the arrangement sits
+*beside* the decision rather than inside it.
 
 ---
 
@@ -287,6 +291,139 @@ user might act on.
 
 ---
 
+## 6. Pricing the cache
+
+Everything above is what the arrangement is worth in **quality**. What kept it
+out of the recommendation was its **price**: it re-embeds N documents per query,
+and how many of those are already cached is a property of a query distribution
+rather than of a corpus.
+
+A run given `--queries` has been handed a sample of that distribution. What sets
+the hit rate is how much the candidate sets overlap between queries, and that is
+countable off a search the run already ran:
+
+```
+candidate_reuse = 1 - |union of the candidate sets| / (sum of their sizes)
+```
+
+Zero when every query retrieves an entirely different set. Approaching one when
+queries pile onto the same popular documents. No extra model call, no extra
+scan.
+
+### The identity, said out loud first
+
+On the **same** query set with a cache that does not evict, replaying those
+candidate sets in order embeds each distinct document exactly once. Misses are
+the union's size, requests are the sum of the set sizes, and the hit rate is
+therefore `candidate_reuse` written twice.
+[Section 9 of the band](bridge-band.md#9-what-the-counting-is-worth) is the
+precedent for what happens when that goes unnoticed, so it is checked rather
+than asserted: over the 48 runs, **42 of the 45** whose working set fits the
+cache embedded exactly `|union|` documents, and the other three differ by one
+document — a tie at the candidate-set boundary broken differently by two search
+paths, or ArguAna's self-mask. Agreement there is not the finding. It is the
+check that says the harness measures what it claims, which makes the rows below
+evidence.
+
+### The measurement that is not an identity
+
+`tools/cascade_reuse.py`, the same ladder and the same 48 runs. For each: the
+count taken over a **sample** of the judged query log, against the hit rate a
+real `rebasis.serve.Cascade` with a real cache reached replaying the **whole**
+log in order, at candidate depth 200.
+
+| sample | mean count | mean hit rate | mean gap | at or below |
+|---|---|---|---|---|
+| 25% of the log | 0.610 | 0.850 | **+0.240** | **48 / 48** |
+| 50% of the log | 0.750 | 0.850 | **+0.101** | **48 / 48** |
+| 100% (the identity control) | 0.853 | 0.850 | −0.002 | 44 / 48 |
+
+**The lower-bound property holds on every run.** A quarter of the log
+under-states the hit rate by 0.24 and half of it by 0.10, and neither ever sits
+above. That is the direction a price used in a decision has to err in: the
+arrangement is costed as more expensive than it will be.
+
+It is not a useless bound either. Across the 48 runs the count ranks them by the
+hit rate they went on to achieve at **Spearman ρ = +0.955** — so it carries the
+run's own reuse, not just a floor everybody shares.
+
+### Where the bound breaks, and it is not a rounding error
+
+The last row's `44 / 48` is the whole caveat and it is worth stating exactly.
+Three runs — all `cqadupstack/tex` — have a candidate working set larger than
+the 50,000 vectors the default in-memory cache holds. The cache evicts, the same
+document is embedded again, and the count then sits **above** the real hit rate:
+
+| run | working set | documents embedded | count exceeded the hit rate by |
+|---|---|---|---|
+| tex, potion→MiniLM | 52,935 | 53,788 | 0.0015 |
+| tex, MiniLM→bge-small | 64,327 | 96,334 | 0.0551 |
+| tex, bge-small→bge-base | 64,620 | 99,935 | 0.0608 |
+
+So the claim is bounded precisely: **`candidate_reuse` is a lower bound on the
+hit rate of a cache large enough to hold the working set**, and
+`MemoryVectorCache`'s default is not always large enough.
+`rebasis.serve.DiskVectorCache` has no such ceiling, and the working set is
+knowable in advance — it is `(1 - candidate_reuse) × N × queries` on the log you
+already have.
+
+---
+
+## 7. Does the rule fire on the right runs?
+
+`probe` now sets `arrangement = "cascade"` when four conditions hold together:
+the two-stage break-even clears the ±0.025 band, the single stage does not
+already win, the store returns document text, and the reuse above was
+measurable. `tools/band_stats.py --view arrangement` scores that rule over the
+same 48 runs.
+
+**The null is strong and it is the point.** The arrangement wins on 36 of 48, so
+a rule that ignores every input and always recommends it is 75% accurate. A rule
+that scores 75% has measured nothing.
+
+| rule | fires on | of those, won | precision |
+|---|---|---|---|
+| the shipped rule | 23 / 48 | 23 | **1.0000** |
+| the same rule with the single-stage gate at 1.0 exactly | 21 / 48 | 21 | 1.0000 |
+| always recommend cascade | 48 / 48 | 36 | 0.7500 |
+
+**On accuracy the rule loses**, 35 of 48 against the constant rule's 36 of 48,
+and that number is here rather than omitted. It is also the wrong summary:
+accuracy scores silence as a wrong answer, and `arrangement` sits *beside* a
+decision rather than replacing one, so declining to name the arrangement is not
+a claim that it loses. What the rule is for is naming runs that will win, and of
+the 23 it named, 23 won.
+
+The two tests that survive an outcome this one-sided:
+
+- **Ranking.** Spearman ρ = **+0.939** (p ≈ 6e-23), Kendall τ = +0.794, between
+  `cascade_advantage` and the margin the arrangement actually returned.
+- **Selection.** The 23 runs the rule named returned a mean margin of **+0.446**
+  against **+0.035** for the 25 it did not. Permutation test over which runs it
+  selected — the labels exchanged, the count held fixed, 10,000 draws, seed
+  20260825 — **p = 0.0001**.
+
+### The identity check, again
+
+`bridge_advantage` collapsed because both its factors are read at the same
+cut-off on the same metric. `cascade_advantage` is retention at depth 200 on
+recall, times an upgrade at k=10 on recall, predicting the graded nDCG@10 of a
+**reranked** list. Three quantities, and none of them cancels. Measured,
+`|cascade_advantage − (1 + margin)|` has a maximum of **0.5874** and a mean of
+0.1508 over the 48 runs, and **0 of 48** sit inside the tolerance two rounded
+ratios can be compared at.
+
+### What the rule costs by being conservative
+
+Thirteen of the 36 winners were not named. The gate that does most of that work
+is "the single stage does not already win", and the largest miss is visible:
+`wordpress, potion→MiniLM` sits at 1.041 on the single stage — just outside the
+noise band — and returned **+80.4%** under the arrangement. The alternative,
+gating at 1.0 exactly, names two fewer runs at the same precision, which is why
+it is not what ships. Neither variant catches that one.
+
+---
+
 ## What this costs, and what has not been measured
 
 **Step 4 is on the hot path.** Embedding N documents per query is not free, and
@@ -303,13 +440,12 @@ construction rather than an option — in memory by default, on disk under the
 into bridge, search and rerank, breaks the embedder out of the third, and
 reports the hit rate and the documents embedded.
 
-**The measurement it still needs cannot be taken here.** How a cache behaves
-depends on a query distribution, and a query distribution is a property of a
-running system rather than of a corpus. So the numbers above say what the
-arrangement is worth in *quality*, `Cascade.stats` is the instrument for what it
-costs on your traffic, and `probe` reports what your adapter would retain that
-way **without recommending it** — the decision rule still runs on the
-single-stage break-even, because that is the arrangement whose cost is known.
+**The measurement it needed is [section 6](#6-pricing-the-cache).** How a cache
+behaves depends on a query distribution, which is a property of a running system
+rather than of a corpus — but a `--queries` run has been handed a sample of that
+distribution, and the overlap inside it is countable. `Cascade.stats` remains the
+instrument for what the arrangement costs on live traffic; `candidate_reuse` is
+the lower bound `probe` can offer before there is any.
 
 **Other limits:**
 
@@ -330,7 +466,13 @@ single-stage break-even, because that is the arrangement whose cost is known.
   rather than assumed.
 - **N = 100 and 200 only.** The two differ by a point or two at most, which is
   the first evidence that the curve flattens early — but where it flattens has
-  not been measured.
+  not been measured. 200 is the depth the decision rule uses, because that is
+  where the 36 of 48 was measured; `--cascade-n` moves it, and a figure measured
+  at another depth prices a different arrangement.
+- **The reuse measurement is one traffic shape per corpus.** Section 6 samples a
+  judged query log and replays the same log. A live system's popular documents
+  are not necessarily popular in a sample of it, and nothing in `probe` can see
+  that.
 
 ## Reproducing
 

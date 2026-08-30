@@ -100,6 +100,43 @@ with the CI checks green, with the App bypassing that one push and nothing else.
   in red on every run, and writes `config.unsafe_logging_enabled` to the audit
   trail.
 
+## Your vectors are alignable, and `rebasis expose` says how much
+
+The premise the rest of this file rests on — that a vector is as sensitive as
+the text it came from — has a second consequence that is newer than the first.
+
+[vec2vec](https://arxiv.org/abs/2505.12540) showed that embeddings can be
+translated between models with no paired data at all, preserving their geometry
+well enough to infer things about the underlying documents; its own framing is
+that *vector databases reveal (almost) as much as their inputs*.
+[mini-vec2vec](https://arxiv.org/abs/2510.02348) then reduced the cost of that
+translation from a day of adversarial training to an orthogonal solve and an
+assignment. So "somebody took the vectors but not the text" is a smaller
+mitigation than it reads as.
+
+`rebasis expose` measures how far that goes on **your** index, and returns a
+single number:
+
+```bash
+rebasis expose --store <uri> --json
+```
+
+Four things about it, and each of them is a limit rather than a feature:
+
+- **It returns no translation.** No aligned vectors, no reconstructed text, no
+  inversion — asserted by a test rather than promised in prose. A number grants
+  nobody a capability; mini-vec2vec is published and installable already.
+- **It is an upper bound.** The measurement draws its reference half from your
+  own corpus, which is a better position than any adversary has.
+- **It carries no band.** low/medium/high would be a policy threshold with no
+  labelled harm to calibrate against, and this project does not ship those.
+- **The reference model must be local.** A hosted endpoint is refused, because
+  measuring exposure by creating some is worse than not measuring it.
+
+[How alignable is your index?](https://batuhanzorbeyzengin.github.io/rebasis/exposure/)
+is the full account, including the list of what the number does not say. It is
+written to be read before the number rather than after it.
+
 ## What rebasis does not claim
 
 The audit trail is **tamper-evident, not tamper-proof.** It is a local file with

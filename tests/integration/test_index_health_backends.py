@@ -33,7 +33,7 @@ N = 300
 #: Every backend with an index of its own. The in-memory store is covered by
 #: the unit tests; these are the ones with a client library between rebasis and
 #: the answer.
-BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec")
+BACKENDS = ("chroma", "faiss", "lancedb", "pgvector", "qdrant", "sqlite-vec")
 
 
 def closing(store: object) -> None:

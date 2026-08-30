@@ -24,9 +24,15 @@ ids with an ellipsis, and an ellipsis is not a job id `rollback` will accept.
 
 ```bash
 rebasis probe ... --json | jq -r .decision
+rebasis probe ... --json | jq -r .arrangement   # single_stage | cascade
 rebasis status --json | jq -r '.[] | select(.state=="paused") | .job_id'
 rebasis doctor --json          # the version to attach to a bug report
 ```
+
+`decision` and `arrangement` are different axes and a script may need both: one
+says what to do with the index, the other what to put in front of it. A run can
+be told `full_reindex` and `cascade` at once, and that is the case
+[the arrangement exists for](../cascade-band.md#7-does-the-rule-fire-on-the-right-runs).
 
 ## Prompts
 
@@ -49,6 +55,59 @@ A contract for script users. A change here is a breaking change.
 
 ---
 
+## `rebasis compare`
+
+Rank several candidate models on your own corpus, without rebuilding the index.
+Reads the index; never writes to it.
+
+| Option | Default | |
+|---|---|---|
+| `--store` | required | Store URI |
+| `--old` | required | The model the index was built with. It is the **reference**, not a candidate — its vectors are already in the index |
+| `--candidates` | required | Comma-separated model ids to rank against it |
+| `--sample` | 10000 | Documents every candidate is scored on. One draw, shared |
+| `--heldout` | 1000 | Documents held out as query proxies |
+| `--queries` | — | Real query log (JSONL). Without one every row is provisional, and a provisional *ordering* is worth less than a provisional single answer |
+| `--synth-queries` | — | `title\|lead\|keywords` — estimate the upgrade from the documents |
+| `--tiered` | off | Score every candidate on a small sample first and carry only what that round could not separate through to the full one |
+| `--k`, `--strategy`, `--seed`, `--device`, `--state-dir`, `--report` | | As for `probe` |
+| `--yes` | off | Skip the cost estimate's confirmation |
+
+```bash
+rebasis compare \
+  --store chroma:///path/db#docs \
+  --old sentence-transformers/all-MiniLM-L6-v2 \
+  --candidates BAAI/bge-small-en-v1.5,BAAI/bge-base-en-v1.5 \
+  --queries queries.jsonl --report compare.html
+```
+
+**Every candidate is scored on the same sample, the same split and the same
+queries.** Only the embedding pass differs. Redrawing per candidate would
+introduce a shift larger than some of the gaps being compared — see
+[access weighting](../access-weighting.md) for the measurement — and a
+comparison cannot survive rows that are not comparable.
+
+**It prints what it will cost before it runs it.** N candidates is N embedding
+passes, and a 300M transformer and an 8M static model differ by two orders of
+magnitude. The estimate is measured on your machine, on 64 of your own
+documents. A candidate on a hosted endpoint is named before the run, because a
+comparison sends the sample off the machine once per such candidate.
+
+**`--json` carries the ordering.** Ranked best first, on `upgrade_gain` — how
+much better each candidate retrieves than the model already in the index.
+
+```bash
+rebasis compare ... --json | jq -r '.candidates[0].model'
+rebasis compare ... --json | jq -r '.ranking_caveat'
+```
+
+Read [what the ordering is worth](../model-selection.md) before gating anything
+on it. `probe`'s estimate is weak as a threshold and carries real information as
+a ranker, and the difference is the whole reason this command reports a table
+rather than a winner.
+
+---
+
 ## `rebasis probe`
 
 Measure what switching models would cost, and recommend. Reads the index; never
@@ -67,6 +126,7 @@ writes to it.
 | `--synth-queries` | — | `title\|lead\|keywords` — estimate the upgrade from the documents when you have no query log |
 | `--report` | — | Write a report; `.html` for HTML, otherwise Markdown |
 | `--strategy` | stratified | `stratified` or `random` |
+| `--cascade-n` | 200 | Candidate depth the two-stage arrangement is measured at; `0` skips it. Bind it to your reranking budget — [the measurement](../cascade-band.md) is at 200 |
 | `--seed` | 0 | Recorded so the run can be replayed |
 | `--device` | auto | `auto\|cpu\|cuda\|cuda:N\|mps` |
 | `--state-dir` | `./.rebasis` | Where the audit trail lives. `REBASIS_STATE_DIR` sets it once. |
@@ -136,6 +196,30 @@ rebasis probe ... --new-dim 768 --query-prefix "query: " --document-prefix "pass
 
 The old model needs no `--old-dim` when it is only being read from the index —
 the index is authoritative about its own dimension.
+
+## `rebasis expose`
+
+Measure how well this index aligns to a space somebody else already has. Reads
+the index; never writes to it, and **returns no vector and no text**.
+
+| Option | Default | |
+|---|---|---|
+| `--store` | required | Store URI |
+| `--reference` | `sentence-transformers/all-MiniLM-L6-v2` | A **local** model to align against — the public one an adversary would reach for. A hosted endpoint is refused, not warned about |
+| `--sample` | 20000 | Documents drawn from the index |
+| `--heldout` | 1000 | Documents kept out of the fit and used to measure it. They are ranked against each other, so this is the pool the number means |
+| `--strategy`, `--seed`, `--device` | | As for `probe` |
+| `--reference-dim` | — | Dimension, for a model rebasis does not know |
+
+```bash
+rebasis expose --store "pgvector://user@host/db#public.documents" --json
+```
+
+It returns a scalar. No band, no low/medium/high, and no translation — the
+reasons are in [how alignable an index is](../exposure.md), which is worth
+reading before the number rather than after it.
+
+---
 
 ## `rebasis fit`
 

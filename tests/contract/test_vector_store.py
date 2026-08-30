@@ -32,7 +32,7 @@ N = 300
 #: `@pytest.fixture(params=...)` is evaluated at collection, and a conftest is
 #: not importable by name — the suite has several, and the module name is not
 #: unique. The builders themselves live in `tests/conftest.py`.
-LIVE_BACKENDS = ("chroma", "faiss", "lancedb", "qdrant", "sqlite-vec")
+LIVE_BACKENDS = ("chroma", "faiss", "lancedb", "pgvector", "qdrant", "sqlite-vec")
 
 
 def _memory_store(rng: np.random.Generator) -> MemoryStore:
@@ -179,6 +179,13 @@ def test_a_store_that_will_not_open_raises_a_rebasis_error(backend: str) -> None
         uri = "faiss:///proc/1/nope.faiss"
     elif backend == "sqlite-vec":
         uri = "sqlite-vec:///proc/1/nope.db#vec_documents"
+    elif backend == "pgvector":
+        # A path means nothing to a client that connects over a socket, so the
+        # unreachable thing here is the server. Port 1 is reserved and nothing
+        # listens on it, which makes the refusal immediate and the same on every
+        # machine — unlike a hostname that does not resolve, where the failure
+        # arrives at whatever speed the resolver decides.
+        uri = "pgvector://nobody@127.0.0.1:1/nope#public.documents"
     else:
         uri = f"{backend}:///proc/1/nope#documents"
 
@@ -191,6 +198,7 @@ def test_a_store_that_will_not_open_raises_a_rebasis_error(backend: str) -> None
         "chroma": "chromadb",
         "faiss": "faiss",
         "lancedb": "lancedb",
+        "pgvector": "psycopg",
         "qdrant": "qdrant_client",
         "sqlite-vec": "sqlite_vec",
     }[backend]

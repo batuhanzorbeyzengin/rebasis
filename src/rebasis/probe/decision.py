@@ -27,10 +27,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rebasis.probe.groundtruth import SYNTH_GAIN_ERROR
-from rebasis.types import Decision  # noqa: TC001 - used at runtime in DECISION_BANDS
+from rebasis.types import (  # noqa: TC001 - used at runtime in DECISION_BANDS
+    Arrangement,
+    Decision,
+)
 
 __all__ = [
     "BORDERLINE_BAND",
+    "CASCADE_RATIONALE",
     "DECISION_BANDS",
     "DecisionResult",
     "decide",
@@ -93,9 +97,24 @@ class DecisionResult:
     #: which the bands were calibrated against on recall.
     ndcg_advantage: float | None = None
     #: Retention when the bridge feeds a rerank instead of producing the final
-    #: ranking. Reported, never decisive: it describes an arrangement the tool
-    #: measures and does not yet serve.
+    #: ranking — what bounds a two-stage arrangement.
     cascade_arr: float | None = None
+    #: Which serving arrangement the numbers support. Beside the decision, not
+    #: one of its values: see :data:`~rebasis.types.Arrangement`.
+    arrangement: Arrangement = "single_stage"
+    #: Lower bound on the two-stage arrangement's cache hit rate, counted off
+    #: the overlap between the run's own candidate sets. ``None`` when the
+    #: queries were not a real log, which is exactly when it cannot be counted.
+    candidate_reuse: float | None = None
+    #: Documents the two-stage arrangement re-embeds per query at the measured
+    #: reuse. The arrangement's whole cost, on the hot path, in one number —
+    #: reported wherever the arrangement is, because a user should not read
+    #: "this wins" and then meet a two-second p99.
+    cascade_embeddings_per_query: float | None = None
+    #: Candidate depth every cascade figure above was measured at. Carried
+    #: because the numbers are not comparable across depths and the rule's
+    #: threshold was calibrated at one of them.
+    cascade_n: int | None = None
     warnings: list[str] = field(default_factory=list)
     rationale: str = ""
 
@@ -113,15 +132,24 @@ class DecisionResult:
         higher in a way that changes the answer — 1 of 48 runs against 36 of 48
         (`docs/cascade-band.md`).
 
-        Reported and **not** acted on, which is a narrower statement than it was.
-        :class:`~rebasis.serve.cascade.Cascade` serves this arrangement, so the
-        objection is no longer that the tool cannot do it. It is that the
-        decision rule weighs quality against cost, and this arrangement's cost
-        depends on a **query distribution** — how often a candidate is already
-        cached — which is a property of a running system and not of the corpus a
-        probe can see. ``bridge_advantage`` costs a matrix multiply whatever the
-        traffic. So the rule runs on the number it can price, and this one is
-        reported for a reader who can price the other.
+        **This now decides**, where it did not before, and what changed is the
+        cost side rather than the quality side. The objection was that the
+        arrangement's price turns on how often a candidate is already cached,
+        which is a property of a query distribution rather than of a corpus a
+        probe can read. That objection does not survive ``--queries``: a real
+        query log *is* a sample of the distribution, and the overlap between the
+        candidate sets it produces can be counted straight off a search the run
+        already ran. :attr:`candidate_reuse` is that count, and it is a lower
+        bound, so the arrangement is priced as more expensive than it will be.
+        Where it cannot be counted the rule does not fire and the report says so.
+
+        Read as a threshold it is not the identity ``bridge_advantage`` turned
+        out to be. That one collapses because both factors are read at the same
+        cut-off on the same metric; this one puts retention at depth ``N``
+        against an upgrade measured at ``k``, and predicts the nDCG@10 of a
+        *reranked* list — three different quantities, and none of them cancels.
+        `docs/cascade-band.md` §7 measures it against the constant rule rather
+        than asserting the difference.
         """
         if self.upgrade_gain is None or self.cascade_arr is None:
             return None
@@ -190,10 +218,36 @@ class DecisionResult:
             "cascade_advantage": (
                 round(self.cascade_advantage, 4) if self.cascade_advantage is not None else None
             ),
+            "arrangement": self.arrangement,
+            "candidate_reuse": (
+                round(self.candidate_reuse, 4) if self.candidate_reuse is not None else None
+            ),
+            "cascade_embeddings_per_query": (
+                round(self.cascade_embeddings_per_query, 1)
+                if self.cascade_embeddings_per_query is not None
+                else None
+            ),
+            "cascade_n": self.cascade_n,
             "score_shift": round(self.score_shift, 4) if self.score_shift else None,
             "warnings": list(self.warnings),
             "rationale": self.rationale,
         }
+
+
+#: What ``arrangement == "cascade"`` means, for the report to print under its
+#: own heading rather than as a footnote to a decision that says the opposite.
+#:
+#: The two sentences are the whole finding: the index does not move, and the
+#: quality comes from the new model ranking its own vectors over a candidate set
+#: the bridge produced.
+CASCADE_RATIONALE = (
+    "Bridging alone does not beat keeping the current model here — but the same "
+    "adapter used as a recall stage does. Keep the index exactly as it is, put "
+    "the bridge in front of it to fetch candidates, and let the new model rank "
+    "those candidates in its own space. Measured over 48 runs, that arrangement "
+    "beat the status quo in 36 where single-stage bridging beat it in 1 "
+    "(docs/cascade-band.md)."
+)
 
 
 _RATIONALE: dict[Decision, str] = {
@@ -270,6 +324,9 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
     estimate_uninformative: bool = False,
     ndcg_advantage: float | None = None,
     cascade_arr: float | None = None,
+    candidate_reuse: float | None = None,
+    cascade_n: int | None = None,
+    can_read_text: bool | None = None,
 ) -> DecisionResult:
     """Turn measurements into a recommendation.
 
@@ -300,9 +357,19 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
             report says so rather than picking one silently.
         cascade_arr: Retention at candidate-set depth — what the bridge would
             retain if it fed a rerank instead of producing the final ranking.
-            Carried onto the result and reported; it decides nothing, because
-            what that arrangement costs depends on a query distribution rather
-            than on this corpus. See :attr:`DecisionResult.cascade_advantage`.
+            With ``candidate_reuse`` and ``can_read_text`` beside it, this is
+            what sets :attr:`DecisionResult.arrangement`.
+        candidate_reuse: Overlap between the candidate sets, which prices the
+            arrangement's cache. ``None`` — the queries were not a real log —
+            leaves it unpriced, and an unpriced arrangement is not recommended.
+        cascade_n: Depth ``cascade_arr`` and ``candidate_reuse`` were measured
+            at. Recorded because the threshold was calibrated at one depth.
+        can_read_text: Whether the store returns the text of a record.
+            :class:`~rebasis.serve.cascade.Cascade` re-embeds the candidates, so
+            on a store that holds no text the arrangement cannot run at all —
+            ``Cascade`` refuses at construction. The rule has to know that
+            refusal in advance or it recommends something nobody can deploy.
+            ``None`` means nobody asked, which blocks it for the same reason.
     """
     warnings: list[str] = []
     bridging_loss = None if old_model_arr is None else old_model_arr - arr_at_k
@@ -339,7 +406,15 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
         settled.warnings = warnings + settled.warnings
         if provisional:
             settled.rationale = _PROVISIONAL_PREFIX + settled.rationale
-        return settled
+        # Beside the decision, and this path is where it matters most: a run
+        # told `full_reindex` because bridging lost to doing nothing is exactly
+        # the run `docs/cascade-band.md` measures a two-stage win on.
+        return _with_arrangement(
+            settled,
+            candidate_reuse=candidate_reuse,
+            cascade_n=cascade_n,
+            can_read_text=can_read_text,
+        )
 
     decision = _band_for(arr_at_k)
 
@@ -404,27 +479,115 @@ def decide(  # noqa: PLR0913 - one keyword argument per measurement the rule use
 
     warnings.extend(_metric_disagreement(advantage, ndcg_advantage))
 
-    return DecisionResult(
-        decision=decision,
-        arr_at_k=arr_at_k,
-        borderline=borderline,
-        nearest_threshold=nearest,
-        distance_to_threshold=distance,
-        confidence_interval=confidence_interval,
-        interval_straddles_threshold=straddles,
-        upgrade_gain=upgrade_gain,
-        score_shift=score_shift,
-        old_model_arr=old_model_arr,
-        provisional=provisional,
-        tier=tier,
-        estimate_uninformative=estimate_uninformative,
-        ndcg_advantage=ndcg_advantage,
-        cascade_arr=cascade_arr,
-        warnings=warnings,
-        rationale=(
-            _PROVISIONAL_PREFIX + _RATIONALE[decision] if provisional else _RATIONALE[decision]
+    return _with_arrangement(
+        DecisionResult(
+            decision=decision,
+            arr_at_k=arr_at_k,
+            borderline=borderline,
+            nearest_threshold=nearest,
+            distance_to_threshold=distance,
+            confidence_interval=confidence_interval,
+            interval_straddles_threshold=straddles,
+            upgrade_gain=upgrade_gain,
+            score_shift=score_shift,
+            old_model_arr=old_model_arr,
+            provisional=provisional,
+            tier=tier,
+            estimate_uninformative=estimate_uninformative,
+            ndcg_advantage=ndcg_advantage,
+            cascade_arr=cascade_arr,
+            warnings=warnings,
+            rationale=(
+                _PROVISIONAL_PREFIX + _RATIONALE[decision] if provisional else _RATIONALE[decision]
+            ),
         ),
+        candidate_reuse=candidate_reuse,
+        cascade_n=cascade_n,
+        can_read_text=can_read_text,
     )
+
+
+_UNPRICED_CASCADE = (
+    "A two-stage arrangement looks better than the single stage here "
+    "({advantage:.3f}x against {single}), and this run cannot price it: {reason} "
+    "So it is reported and not recommended. See docs/cascade-band.md."
+)
+
+_NO_REAL_QUERIES = (
+    "the cache hit rate is a property of your traffic, and only a real query "
+    "log samples it. Re-run with --queries."
+)
+
+_NO_TEXT = (
+    "the arrangement re-embeds each candidate, and this store does not return the text of a record."
+)
+
+
+def _with_arrangement(
+    result: DecisionResult,
+    *,
+    candidate_reuse: float | None,
+    cascade_n: int | None,
+    can_read_text: bool | None,
+) -> DecisionResult:
+    """Put the arrangement the numbers support beside the decision.
+
+    Four conditions, and each of them can veto:
+
+    **The two-stage figure clears the noise band.** Not merely above 1.0: the
+    same +-0.025 every other threshold in this module uses, because the quantity
+    carries the same measurement error.
+
+    **The single stage does not already win.** These are alternatives only in
+    the sense that nobody needs both — where bridging alone pays, a rerank stage
+    is cost for nothing. The test is against the noise band rather than against
+    1.0 exactly, which is a deliberate departure from the plan this rule was
+    written from: ``decide`` has just told a run at 1.01 that bridging and doing
+    nothing cannot be told apart, and a rule that then treated 1.01 as a win for
+    the single stage would claim the precision the band exists to deny.
+    `docs/cascade-band.md` §7 measures both variants.
+
+    **The store can hand back text.** :class:`~rebasis.serve.cascade.Cascade`
+    refuses at construction without it, so a recommendation would name something
+    that cannot be run.
+
+    **The cache has been priced.** :func:`~rebasis.probe.metrics.candidate_reuse`
+    is measurable only against a real query log. Assuming a hit rate instead
+    would be the one thing this project does not do.
+
+    Where the first two hold and one of the last two does not, the result says
+    so — that is a user with a win they cannot be told about, and silence there
+    is worse than the caveat.
+    """
+    result.candidate_reuse = candidate_reuse
+    result.cascade_n = cascade_n
+    if candidate_reuse is not None and cascade_n is not None:
+        result.cascade_embeddings_per_query = cascade_n * (1.0 - candidate_reuse)
+
+    advantage = result.cascade_advantage
+    single = result.bridge_advantage
+    if advantage is None or advantage <= 1 + BORDERLINE_BAND:
+        return result
+    if single is not None and single > 1 + BORDERLINE_BAND:
+        return result
+
+    reason = None
+    if can_read_text is not True:
+        reason = _NO_TEXT
+    elif candidate_reuse is None:
+        reason = _NO_REAL_QUERIES
+    if reason is not None:
+        result.warnings.append(
+            _UNPRICED_CASCADE.format(
+                advantage=advantage,
+                single="nothing measurable" if single is None else f"{single:.3f}x",
+                reason=reason,
+            )
+        )
+        return result
+
+    result.arrangement = "cascade"
+    return result
 
 
 def _settled_before_the_bands(  # noqa: PLR0913 - one argument per input it consults

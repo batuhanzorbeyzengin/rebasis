@@ -22,6 +22,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
+from rebasis.probe.decision import CASCADE_RATIONALE
+
 if TYPE_CHECKING:
     from rebasis.probe.runner import ProbeResult
 
@@ -126,16 +128,20 @@ _DECISION_COLOUR = {
 }
 
 
-#: What the cascade figure is, and what rebasis does not do with it.
+#: What the cascade figure is and where it was measured.
 _CASCADE_EXPLAINER = (
     "A two-stage arrangement is bounded by whether the relevant document reached "
     "the candidate set, not by where the bridge ranked it — which is a weaker "
-    "requirement, and measurably so: across 24 runs single-stage bridging beat "
-    "keeping the current model in 0, and a two-stage arrangement in 16 "
-    "([the measurement](../cascade-band.md)). **rebasis measures this and does not "
-    "serve it.** Building it means re-embedding N documents per query, which is a "
-    "different cost class from the mapping, and needs a cache that does not exist "
-    "yet. Treated as a reason to look, not as a recommendation."
+    "requirement, and measurably so: across 48 runs single-stage bridging beat "
+    "keeping the current model in 1, and a two-stage arrangement in 36 "
+    "([the measurement](../cascade-band.md))."
+)
+
+#: Why an arrangement that scores well is still not recommended here.
+_CASCADE_UNPRICED = (
+    "It is **not** recommended on this run, because what it costs turns on how "
+    "often a candidate is already in the cache and this run could not count "
+    "that. The figure above is a reason to look, not a recommendation."
 )
 
 #: Why the bound is in the report at all, and what it is not.
@@ -264,35 +270,84 @@ def _warnings(result: ProbeResult) -> list[str]:
 
 
 def _cascade(result: ProbeResult) -> list[str]:
-    """What the same adapter would be worth feeding a rerank.
+    """What the same adapter is worth feeding a rerank, and what that costs.
 
-    Reported after the decision, never inside it. `rebasis.serve.Cascade` does
-    serve this arrangement — what keeps it out of the decision is that its cost
-    depends on how often a candidate is already cached, which is a property of a
-    query log rather than of the corpus this run measured.
+    Its own block, and deliberately not a footnote under the decision heading.
+    The case this exists for is a run told ``full_reindex`` whose two-stage
+    figure wins: printed underneath "rebuild your index" nobody reads it, and
+    that user leaves with the more expensive of the two answers.
+
+    The cost is printed beside the win, never after it. The arrangement embeds
+    documents on the hot path, and a reader who takes the recommendation without
+    the number meets it as a p99 instead.
     """
     decision = result.decision
     advantage = decision.cascade_advantage
     if advantage is None or decision.cascade_arr is None:
         return []
 
+    recommended = decision.arrangement == "cascade"
+    depth = decision.cascade_n
+    at_depth = f"@{depth}" if depth is not None else ""
     single = decision.bridge_advantage
     comparison = (
         f" — against {single:.2f}x when the bridge produces the final ranking"
         if single is not None
         else ""
     )
+    heading = (
+        "### Recommended: keep the index, add a rerank stage"
+        if recommended
+        else "### If the bridge fed a rerank instead"
+    )
+    lines = [heading, ""]
+    if recommended:
+        lines.extend([CASCADE_RATIONALE, ""])
+    lines.extend(
+        [
+            (
+                f"Used as a **recall stage** — the adapter retrieves a candidate set "
+                f"of {depth if depth is not None else 'N'} and the new model reorders "
+                f"it in its own space — this adapter retains "
+                f"**{decision.cascade_arr:.3f}** of what a full reindex finds at that "
+                f"depth, putting the break-even at **{advantage:.2f}x**{comparison}."
+            ),
+            "",
+        ]
+    )
+    lines.extend(_cascade_cost(result, at_depth=at_depth))
+    lines.append(_CASCADE_EXPLAINER if recommended else _CASCADE_UNPRICED)
+    lines.append("")
+    return lines
+
+
+def _cascade_cost(result: ProbeResult, *, at_depth: str) -> list[str]:
+    """The hot-path price, in documents embedded per query.
+
+    Two numbers rather than one, because the second is the one a reader can
+    check against their own latency budget and the first is why it is not the
+    full candidate set. Both are omitted rather than guessed when the run had no
+    real query log to count the overlap on.
+    """
+    decision = result.decision
+    reuse = decision.candidate_reuse
+    per_query = decision.cascade_embeddings_per_query
+    if reuse is None or per_query is None:
+        return []
     return [
-        "### If the bridge fed a rerank instead",
-        "",
         (
-            f"Used as a **recall stage** — the adapter retrieves a candidate set and "
-            f"the new model reorders it in its own space — this adapter retains "
-            f"**{decision.cascade_arr:.3f}** of what a full reindex finds at that depth, "
-            f"putting the break-even at **{advantage:.2f}x**{comparison}."
+            f"**It costs about {per_query:.0f} documents embedded per query.** "
+            f"Your query log's candidate sets overlap by {reuse:.0%}"
+            f"{at_depth}, so that share of each candidate set is already cached "
+            f"and only the rest is re-embedded. The overlap is a **lower bound** "
+            f"— a running cache accumulates across queries this sample does not "
+            f"contain — so the real figure is at or below this one, *provided "
+            f"the cache can hold the working set*. Measured, three runs in 48 "
+            f"whose candidate sets ran past `MemoryVectorCache`'s 50,000 entries "
+            f"paid up to 6 points more than this number says; `DiskVectorCache` "
+            f"has no such ceiling "
+            f"([the measurement](../cascade-band.md#6-pricing-the-cache))."
         ),
-        "",
-        _CASCADE_EXPLAINER,
         "",
     ]
 
