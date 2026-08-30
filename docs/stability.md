@@ -134,7 +134,7 @@ Being specific about this is the point of the page.
 | **Python** | 3.12 | 3.12 | 3.13 in CI |
 | **Stores** | pgvector, Chroma, LanceDB, sqlite-vec, Qdrant, FAISS, in-memory — the same contract suite and a migrate-and-rollback cycle for each | as CI | Qdrant in server mode beyond the local-mode suite |
 | **Embedders** | in-memory and precomputed | sentence-transformers, fastembed on real models | ollama, llama-cpp, hosted OpenAI-compatible endpoints |
-| **Scale** | hundreds of records | up to 100,000 for index health | **millions — see below** |
+| **Scale** | hundreds of records | up to 100,000 for index health, and one **1,000,000-row** pgvector migration | **somebody else's index — see below** |
 
 **The middle column is run by hand, and used to say "nightly".** It was
 describing a workflow that drives the maintainer's GPU host through scripts
@@ -168,6 +168,15 @@ an existing file there — and nothing exercises it.
 single largest gap between this and something to trust unsupervised, and no
 amount of unit testing closes it. Take a backup rebasis is not part of, and try
 `--limit` on a slice first.
+
+The *size* half of that sentence has moved, and it is worth separating from the
+half that has not. `migrate` has been run against a **1,000,000-row** pgvector
+table: 100,000 records at 292 per second, and peak memory identical to the same
+migration against a 20,000-row table, so the streaming contract holds at that
+size rather than being asserted for it
+([the measurement](guides/pgvector.md#at-a-million-rows)). A synthetic million
+rows is still not somebody's production database, which is the part that needs
+their data.
 
 ## The four version axes
 

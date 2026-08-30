@@ -37,11 +37,18 @@ up as a service rather than letting that layer skip — it is also the first
 backend where a batch is a **transaction** rather than four mechanisms rebasis
 built above the storage engine ([the guide](docs/guides/pgvector.md)).
 
-**Not proved at scale.** Everything above is tested on hundreds of records, not
-millions. Nobody has yet pointed `migrate` at an index they could not rebuild.
-That is the single largest gap between 0.1 and something you should trust
-unsupervised, and no amount of unit testing closes it — it needs somebody's real
-vault and a backup.
+**Not proved at scale — half of this has now moved.** The sentence used to say
+"hundreds of records, not millions". `migrate` has now been run against a
+**1,000,000-row** pgvector table, and the property that mattered held: migrating
+5,000 records peaks at 7.3 MB whether the table holds 20,000 rows or a million,
+so peak memory is a function of what is *enqueued* rather than of what is in the
+table. 100,000 records went through at 292 per second, and the shadow covered
+every one of them. [The measurement](docs/guides/pgvector.md#at-a-million-rows).
+
+The other half stands unchanged and is the one that matters: **nobody has yet
+pointed `migrate` at an index they could not rebuild.** A synthetic million rows
+is not somebody's production database, and that gap needs their data and their
+backup rather than more measuring here.
 
 ---
 

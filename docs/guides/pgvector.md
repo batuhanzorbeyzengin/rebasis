@@ -188,6 +188,51 @@ move from `vector(1024)` to `vector(256)`, or from `vector` to `halfvec`, is
 yours to perform — and [`probe --truncate`](../truncation-band.md) is what tells
 you whether it is worth performing.
 
+## At a million rows
+
+`ROADMAP.md`'s largest stated gap is one sentence: *everything is tested on
+hundreds of records, not millions.* pgvector is the first backend where a table
+of that size can be stood up in minutes on a machine the project already has,
+so it was — `spikes/pgvector_scale.py`, 1,000,000 rows at 384 dimensions.
+
+| table | migrated | seconds | records/s | peak traced memory |
+|---|---|---|---|---|
+| 20,000 | 5,000 | 10.5 | 478 | **7.3 MB** |
+| **1,000,000** | 5,000 | 14.1 | 354 | **7.3 MB** |
+| **1,000,000** | 100,000 | 342.6 | 292 | 17.4 MB |
+
+**The middle row is the finding.** Migrating the same 5,000 records against a
+table fifty times larger peaks at exactly the same 7.3 MB. Peak memory is a
+function of how many records are **enqueued**, not of how many are in the table
+— which is the `O(batch × d)` streaming contract, measured at a million rows
+rather than argued from a docstring. The third row's extra 10 MB is 95,000 more
+queued ids, about 105 bytes each, which is a Python string in a list.
+
+**The shadow scaled with it and stayed correct.** 100,000 records, 153.6 MB on
+disk, every migrated record covered, and a sample read back cleanly. That is
+`rollback`'s promise at a size nobody had asked it about.
+
+Two things this does **not** establish, and they are the half of the ROADMAP's
+sentence that stays open:
+
+- **The table had no index on the vector column.** These figures are the write
+  path alone. Index maintenance on `UPDATE` is real and measured separately —
+  [what a migration does to the index](../index-health.md) puts HNSW at two to
+  four times IVFFlat's cost at 100,000 records — so a migration against an
+  indexed million-row table will be slower than 292 records per second.
+- **It is still not somebody's index.** A synthetic million rows on a machine
+  running three other jobs is not a production database, and nobody has yet
+  pointed `migrate` at an index they could not rebuild. That gap needs somebody
+  else's data and a backup, and no amount of measuring here closes it.
+
+**One practical finding from standing the table up**: building an IVFFlat index
+over a million 384-dimensional vectors asks for 76 MB and PostgreSQL's default
+`maintenance_work_mem` is 64, so the build fails — *"memory required is 76 MB,
+maintenance_work_mem is 64 MB"* — after the whole table has loaded. rebasis
+never creates an index, so this is not its failure; it is what anybody creating
+a vector index at that size meets. `SET maintenance_work_mem = '1GB'` for the
+session that builds it.
+
 ## Scope, stated plainly
 
 **One table, named columns.** A joined schema, a partitioned table, text in a
