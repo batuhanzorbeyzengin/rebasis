@@ -83,10 +83,65 @@ their width anyway, which is exactly what
 [Takeshita et al.](https://arxiv.org/abs/2605.16608) report — "robust to
 truncation without Matryoshka learning, **except in heavy truncation
 scenarios**" — and the 64-dimensional row is what "heavy" looks like measured.
-What is *not* established here is the other half of that: no
-Matryoshka-trained model was measured, so nothing on this page says how much
-MRL training buys. The models people reach for when cutting dimensions are
-precisely the ones trained for it.
+A model that *was* trained for it is measured
+[below](#the-one-model-that-was-trained-for-this), and the answer is that the
+training bought nothing at any shared dimension.
+
+---
+
+## The one model that was trained for this
+
+Every model above was trained without Matryoshka Representation Learning, so
+truncating them is an operation performed *on* the model rather than one it was
+trained for. `mxbai-embed-large-v1` was — its card states it supports both MRL
+and quantization — and it is 1024-dimensional, which makes the comparison
+possible at four shared absolute dimensions.
+
+Retention against each model's **own** full-width nDCG@10, so what is being
+compared is what truncation costs rather than which model is better. Both
+columns are means over the **same sixteen corpora** — the comparison is worth
+nothing otherwise, and an earlier draft of this page got it wrong by averaging
+`mxbai` over the corpora it had reached and `bge-base` over four more:
+
+| dimensions | mxbai-embed-large (MRL, 1024) | bge-base (no MRL, 768) |
+|---|---|---|
+| 512 | 0.980 | 0.980 |
+| 256 | 0.924 | 0.921 |
+| 128 | 0.827 | 0.820 |
+| 64 | 0.639 | 0.632 |
+
+**Matryoshka training bought nothing measurable here.** The MRL model is ahead
+at three of the four depths and the largest margin is 0.007, against a
+corpus-to-corpus spread at the same depths of 0.037, 0.062, 0.146 and 0.276.
+Which corpus you run on moves the answer between five and forty times further
+than which of these two models you run.
+
+And the sign of that 0.007 does not survive changing the average. Taking medians
+instead of means, `bge-base` is ahead at 64 by 0.016 — the two distributions are
+skewed differently and the model difference is inside that. A difference whose
+direction depends on whether you take the mean or the median is not a
+difference.
+
+Read by fraction of width the MRL model does cut further for the same retention
+— 0.980 at half width against 0.980 at two thirds — but that is the advantage of
+starting at 1024 dimensions, not of the training.
+
+This reproduces [Takeshita et al.](https://arxiv.org/abs/2605.16608) on a
+different corpus family. Their title is the finding — *Text Embeddings are
+Robust to Truncation Without Matryoshka Learning, Except In Heavy Truncation
+Scenarios* — and the 64-dimensional row is the exception they name, where both
+models fall to around 0.63 whatever their training.
+
+**And it bought no steadiness either.** The spread across the sixteen corpora is
+0.037 against 0.038 at 512, 0.062 against 0.065 at 256, 0.146 against 0.166 at
+128, and 0.276 against 0.249 at 64: narrower for the MRL model at three depths
+by margins far smaller than the spreads themselves, and wider at the fourth. An
+earlier draft claimed MRL was the steadier of the two; that came from the same
+unequal corpus sets and is withdrawn.
+
+*(Sixteen corpora: twelve cqadupstack subforums, plus arguana, fiqa, nfcorpus
+and scifact. One MRL model, at one width. What a second one, or a corpus family
+further from question-answering, would show is not measured here.)*
 
 ---
 
@@ -219,10 +274,10 @@ This says what the change is worth. Performing it stays yours.
 
 ## What this does not establish
 
-- **Three models, none of them Matryoshka-trained.** That is a finding rather
-  than a gap — see above — but it is not a measurement of an MRL model, and the
-  models trained for truncation are the ones most people cutting dimensions are
-  using.
+- **Four models, one of them Matryoshka-trained.** One MRL model is enough to
+  show that the training bought nothing here and not enough to say it never
+  does: `mxbai-embed-large-v1` is one architecture at one width, and a model
+  whose MRL objective was weighted differently might behave differently.
 - **English, technical Q&A and BEIR.** `docs/golden-findings.md` section 7's
   warning applies word for word: scifact is scientific abstracts, and a band
   measured here is not a band for an Obsidian vault. That is the whole argument

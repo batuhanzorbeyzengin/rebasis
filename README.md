@@ -437,6 +437,13 @@ Using the tool without knowing what it cannot do costs more than not using it.
 - **The measurement has its own uncertainty.** ARR is computed from a sample, and
   results near a threshold are reported as borderline rather than rounded to a
   side.
+- **The truncation grid simulates every precision but one, and writes none of
+  them.** `--truncate`/`--quantize` quantize in numpy; only `float16` has been
+  matched against a real column (pgvector's `halfvec`, bit for bit). `int8`
+  provably does not match one — `sqlite-vec` scales by a caller-supplied range
+  and the grid by each vector's own magnitude — so those cells stay labelled
+  simulated. And nothing is written back: changing a column's width or type is
+  DDL against a live index, which belongs to whoever owns the migration window.
 - **`expose` does not always return one number.** The alignment it measures is
   stochastic, so it runs three and reports the best. On one BEIR corpus those
   three agreed within 0.054; on another they were 0.087, 0.624 and 0.034. When

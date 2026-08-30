@@ -127,12 +127,45 @@ writes to it.
 | `--report` | — | Write a report; `.html` for HTML, otherwise Markdown |
 | `--strategy` | stratified | `stratified` or `random` |
 | `--cascade-n` | 200 | Candidate depth the two-stage arrangement is measured at; `0` skips it. Bind it to your reranking budget — [the measurement](../cascade-band.md) is at 200 |
+| `--truncate` | — | Widths to score the *same* model at, comma separated (`768,512,256`). Turns the run into a grid and needs no `--new` |
+| `--quantize` | `float32,float16,int8,binary` | Precisions to score each width at. `binary` carries a second retention: what it returns once the full-precision vectors reorder its candidates |
+| `--floor` | — | Retention to clear, e.g. `0.95`. Names the cheapest cell above it, and says so when a cell's interval straddles the floor rather than picking a side |
 | `--seed` | 0 | Recorded so the run can be replayed |
 | `--device` | auto | `auto\|cpu\|cuda\|cuda:N\|mps` |
 | `--state-dir` | `./.rebasis` | Where the audit trail lives. `REBASIS_STATE_DIR` sets it once. |
 | `--old-dim`, `--new-dim` | — | Dimension, for a model rebasis does not know |
 | `--query-prefix`, `--document-prefix` | — | The new model's prefixes |
 | `--old-query-prefix`, `--old-document-prefix` | — | The old model's prefixes |
+
+### A cheaper representation of the same index
+
+`--truncate` and `--quantize` ask a different question from the rest of `probe`:
+not "is the new model worth it" but "what would this index cost held more
+narrowly". No model change, no adapter, and no second embedding pass — the model
+runs once and cutting what it produced is free, so a sixteen-cell grid costs
+what one `probe` costs.
+
+```bash
+rebasis probe --store chroma:///path/db#notes --old BAAI/bge-base-en-v1.5 \
+  --truncate 768,512,256,128 --quantize float32,int8,binary --floor 0.95
+```
+
+Three things the grid does not do, and each is a limit rather than an omission:
+
+- **It does not write anything back.** Changing a column's width or type is DDL
+  against a live index, and that belongs to whoever owns the migration window.
+  `probe` reports what the change would cost and stops there.
+- **Every precision but one is simulated.** rebasis quantizes in numpy; what a
+  store does with the same vector is the store's business. The exception is
+  measured: `float16` matches pgvector's `halfvec` **bit for bit**, so that
+  column is not an approximation. `int8` provably does not match — `sqlite-vec`
+  scales by a caller-supplied range and the grid scales by each vector's own
+  largest magnitude — which is why the label stays on the others.
+- **It says nothing about a model it was not run on.** Retention at 256
+  dimensions varies by up to 0.166 across corpora, which is the reason the flag
+  exists rather than a published average.
+
+[The numbers](../truncation-band.md), including what Matryoshka training bought.
 
 ### Without a query log
 
