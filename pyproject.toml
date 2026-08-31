@@ -217,7 +217,7 @@ docs = [
 release = [
     "python-semantic-release>=10.6",
     # Not a taste. 3.1.60 is the release that removed the attribute above.
-    "gitpython<3.1.60",
+    "gitpython<3.1.61",
 ]
 
 # M0 spike dependencies — never shipped, development environment only
